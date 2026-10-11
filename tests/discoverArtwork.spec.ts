@@ -65,15 +65,16 @@ describe('发现页补图磁盘缓存与验证（模拟测试，不是线上网�
     vi.mocked(request).mockResolvedValueOnce(response(1, 'text/html') as any);
     expect((await art.images('狂飙第三季', 'tv')).backdrops).toEqual([]);
   });
-  it('坏候选尝试下一个；海报与横图不串缓存', async () => {
+  it('坏候选尝试下一个；海报禁止调用图片搜索', async () => {
     const { art } = fixture();
     vi.mocked(so360SearchBackdrops).mockResolvedValueOnce([candidate, { ...candidate, img: 'https://image.test/other.jpg' }]);
     vi.mocked(request).mockResolvedValueOnce(response(0) as any).mockResolvedValueOnce(response() as any);
     expect((await art.images('狂飙', 'tv')).backdrops).toHaveLength(1);
-    vi.mocked(request).mockResolvedValueOnce(response(2) as any);
     const posters = await art.images('狂飙', 'tv', undefined, 'poster');
-    expect(posters.posters).toHaveLength(1);
+    expect(posters.posters).toHaveLength(0);
     expect(posters.backdrops).toEqual([]);
+    expect(fetchSo360).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it('缓存文件被清理后重搜；异常索引文件名不做删除', async () => {
     const { dir, store, art } = fixture();

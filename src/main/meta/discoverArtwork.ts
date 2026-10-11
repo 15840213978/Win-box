@@ -1,4 +1,4 @@
-// 首页图片补全：按影片搜索横版图，下载成功才落缓存；不影响源内的竖版封面规则。
+// 详情背景图：只搜索横版剧照，下载并解码成功才落缓存；封面禁止走此链路。
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { nativeImage } from 'electron';
 import { join } from 'node:path';
@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { Agent, request } from 'undici';
 import { JsonStore } from '../store/JsonStore';
 import { dispatchChain } from '../net/proxy';
-import { so360SearchBackdrops, fetchSo360, pickBestSo360Cover, isRelevantHit, isPortraitCover, SO360_REFERER } from './so360Provider';
+import { so360SearchBackdrops, SO360_REFERER } from './so360Provider';
 import { LOCAL_PROXY_BASE } from '../../shared/constants';
 import type { Logger, MetaImages } from '../../shared/types';
 
@@ -21,12 +21,14 @@ export class DiscoverArtwork {
   constructor(private store: JsonStore, private cacheRoot: string, private log: Logger) {}
 
   async images(name: string, mediaType: 'movie' | 'tv', year?: string, kind: 'backdrop' | 'poster' = 'backdrop'): Promise<MetaImages> {
+    // 在读取缓存前阻断旧版搜索海报，避免继续展示已缓存的错封面。
+    if (kind === 'poster') return { backdrops: [], posters: [] };
     const title = name.trim().slice(0, 160);
     if (title.length < 2) return { backdrops: [], posters: [] };
     const key = createHash('sha256').update(`${kind}|${mediaType}|${title}|${year || ''}`).digest('hex');
     const toImages = (files: string[]): MetaImages => {
       const urls = files.map(file => `${LOCAL_PROXY_BASE}/file/discovery-images/${file}`);
-      return { backdrops: kind === 'backdrop' ? urls : [], posters: kind === 'poster' ? urls : [] };
+      return { backdrops: urls, posters: [] };
     };
     const stored = this.store.getObject<ArtworkEntry | null>(key, null);
     const files = (Array.isArray(stored?.files) ? stored.files : []).filter(file => /^[a-f0-9]{64}\.(jpg|png|webp)$/.test(file) && existsSync(join(this.cacheRoot, 'discovery-images', file)));
@@ -36,12 +38,7 @@ export class DiscoverArtwork {
     if (running) return running;
     const run = async () => {
       const signal = AbortSignal.timeout(25000);
-      const coverCandidates = kind === 'poster' ? (await fetchSo360(`${title} ${year || ''} 海报`, signal)).filter(c => {
-        const years: string[] = c.title.match(/\b(?:19|20)\d{2}\b/g) || [];
-        return isPortraitCover(c) && isRelevantHit(title, c.title) && (!year || !years.length || years.includes(year));
-      }) : [];
-      const cover = pickBestSo360Cover(coverCandidates);
-      const candidates = kind === 'poster' ? (cover ? [cover] : []) : await so360SearchBackdrops(this.log, title, mediaType, year, signal);
+      const candidates = await so360SearchBackdrops(this.log, title, mediaType, year, signal);
       const downloaded: string[] = [];
       // 有一个可用图就停止，避免首屏批量搜图/下载；后续命中直接读本地缓存。
       for (const c of candidates) {
@@ -67,7 +64,7 @@ export class DiscoverArtwork {
           const buffer = Buffer.concat(parts);
           const decoded = nativeImage.createFromBuffer(buffer);
           const { width, height } = decoded.getSize();
-          if (decoded.isEmpty() || (kind === 'backdrop' ? width < 800 || height < 400 || width / height < 1.4 || width / height > 2.4 : !isPortraitCover({ w: width, h: height }))) continue;
+          if (decoded.isEmpty() || width < 800 || height < 400 || width / height < 1.4 || width / height > 2.4) continue;
           const file = `${createHash('sha256').update(`${key}|${c.img}`).digest('hex')}.${ext}`;
           mkdirSync(join(this.cacheRoot, 'discovery-images'), { recursive: true });
           writeFileSync(join(this.cacheRoot, 'discovery-images', file), buffer);

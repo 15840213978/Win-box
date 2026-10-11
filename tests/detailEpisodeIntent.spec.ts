@@ -18,7 +18,7 @@ const findFunction = (name: string): ts.FunctionDeclaration => {
 };
 
 describe('detail episode playback intent', () => {
-  it('详情和播放窗口不自动查询外部元数据，展示源封面和简介', () => {
+  it('封面与背景加载不进入播放链路，简介仍展示源数据', () => {
     const player = readFileSync(new URL('../src/renderer/pages/PlayerPage.tsx', import.meta.url), 'utf8');
     for (const content of [source, player]) {
       const parsed = ts.createSourceFile('page.tsx', content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -34,7 +34,8 @@ describe('detail episode playback intent', () => {
       expect(calls).not.toContain('metaImages');
       expect(calls).toContain('play');
     }
-    expect(source).toContain("const srcCover = detail?.pic || fromListPic || ''");
+    expect(findFunction('play').getText(file)).not.toMatch(/useCovers|metaSearch|metaDiscoverImages/);
+    expect(source).toContain("pic: detail?.pic || fromListPic || ''");
     expect(source).toContain("const introText = (detail?.des || '').trim()");
   });
 

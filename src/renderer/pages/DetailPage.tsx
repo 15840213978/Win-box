@@ -8,8 +8,8 @@ import BackButton from '../components/BackButton';
 import { isDetailWindow } from '../lib/detailWin';
 import { uiMem, schedulePersist } from '../lib/uiMemory';
 import type { Episode, VodDetail } from '../../shared/types';
-import { wrapImageUrlForRelay } from '../../shared/driveProvider';
-import { pickCover } from '../lib/coverPick';
+import { useCovers } from '../lib/useCovers';
+import HeroBackdrop from '../components/HeroBackdrop';
 import { formatEpisodeLabel } from '../lib/epName';
 import { EP_PAGE_SIZE, epPageSlice } from '../lib/epPager';
 import { makeStaleGuard } from '../lib/staleGuard';
@@ -96,9 +96,6 @@ export default function DetailPage({
     setErr('');
     playGenRef.current.next(); // ★ 换了一部片 → 上一条解析作废（并放开 busy，避免按钮被旧请求卡住）
     setBusy(false);
-    setSrcPicBad(false);
-    setSrcPicRelay('');
-    setRelayBad(false);
     client
       .detail({ key: k, ids: [i] })
       .then((d) => {
@@ -122,27 +119,20 @@ export default function DetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, id]);
 
-  // 播放详情只使用源数据；缺图/缺简介不触发外部元数据查询，也不影响选集。
-  /** 源封面加载失败时，仅重试同一张图的本地中继。 */
-  const [srcPicBad, setSrcPicBad] = useState(false);
-  /** ★ 源封面经本地 /img 中继重试（注入同源 Referer 破防盗链）的地址；只试一次 */
-  const [srcPicRelay, setSrcPicRelay] = useState('');
-  /** 中继重试也失败 → 显示无封面，不查询第三方图片。 */
-  const [relayBad, setRelayBad] = useState(false);
-  const coverErr = (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const el = e.target as HTMLImageElement;
-    const src = el.currentSrc || el.src || '';
-    // 源图已在本地中继中则不再递归包装。
-    if (/\/img\?/.test(src)) {
-      setSrcPicBad(true);
-      setRelayBad(true);
-      return;
-    }
-    setSrcPicBad(true);
-    // ★ 源封面失败 → 先经本地 /img 中继重试一次（DoH + Referer 链，破防盗链与 DNS 污染）
-    const relay = wrapImageUrlForRelay(src, navigator.userAgent);
-    if (relay) setSrcPicRelay((prev) => prev || relay);
-  };
+  // 图片补全独立于源详情和播放状态，任何失败都不阻塞选集与播放。
+  const coverItem = { id: memKey, name: detailName, year: detail?.year || undefined, pic: detail?.pic || fromListPic || '' };
+  const covers = useCovers([coverItem], !loading);
+  const cover = covers.picOf(coverItem);
+  const coverErr = (e: React.SyntheticEvent<HTMLImageElement>) => covers.onError(coverItem, e.currentTarget.getAttribute('src') || '');
+  const [backdrop, setBackdrop] = useState<{ key: string; urls: string[] } | null>(null);
+  useEffect(() => {
+    if (loading || !detailName || !(nf || ap)) return;
+    let alive = true;
+    void client.metaDiscoverImages(detailName, /剧|tv/i.test(detail?.type || '') ? 'tv' : 'movie', detail?.year || undefined, 'backdrop')
+      .then(images => { if (alive) setBackdrop({ key: memKey, urls: images.backdrops }); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [loading, detailName, detail?.year, detail?.type, memKey, nf, ap]);
 
   // 滚动位置记忆
   useEffect(() => {
@@ -246,9 +236,6 @@ export default function DetailPage({
     }
   }
 
-  /** 源封面优先；详情未给图时使用列表传入的图。 */
-  const srcCover = detail?.pic || fromListPic || '';
-  const cover = pickCover({ srcPic: srcCover, srcBad: srcPicBad, relay: srcPicRelay, relayBad });
   const castList: Array<{ name: string }> = (detail?.actor || '')
     .split(/[,，/、;；|]+/)
     .map((s) => s.trim())
@@ -308,9 +295,14 @@ export default function DetailPage({
           <div className="empty">无详情</div>
         ) : (
           <>
+            {backdrop?.key === memKey && backdrop.urls.length > 0 && (nf || ap) && (
+              <div className={nf ? 'nf-detail-backdrop' : 'ap-detail-backdrop'} style={nf ? { position: 'absolute' } : undefined} aria-hidden="true">
+                <HeroBackdrop urls={backdrop.urls} />
+              </div>
+            )}
             {/* ★ 2026-10-08（豆风）：头图区 —— 大海报卡 + 信息区（豆瓣影片页布局；不再是「小图 + 右列文字」） */}
             <div className={db ? 'db-hero' : 'row'} style={db ? undefined : { alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
-              {/** 源图直接使用，坏图仅做同图中继重试。 */}
+              {/** 封面不使用图片搜索；横版背景独立加载。 */}
               {cover ? (
                 <img
                   src={cover}

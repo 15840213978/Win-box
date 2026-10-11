@@ -10,19 +10,11 @@ import type { AuditItem, SourceDebugReport } from '../../shared/types';
 import { applyTheme, currentTheme } from '../lib/theme';
 import { getShowDiscover, setShowDiscover, getMotionPref, setMotionPref, type MotionPref } from '../lib/uiPrefs';
 import { THEME_LABELS, type Theme } from '../lib/themeTokens';
-import { DEFAULT_META_SETTINGS, type MetaSettings, type MetaSource } from '../../shared/meta';
+import { DEFAULT_META_SETTINGS, type MetaSettings } from '../../shared/meta';
 import { DEFAULT_PLAYER_SETTINGS, type PlayerSettings, type MpvStatus } from '../../shared/player';
 import type { DavServer } from '../../shared/webdav';
 
 type TabId = 'sources' | 'health' | 'profiles' | 'account' | 'storage' | 'appearance' | 'play' | 'shortcut' | 'network' | 'backup';
-
-/** ★ 2026-09-24：元数据来源策略选项（封面与简介共用；「仅 TMDB」需用户先填自己的 API） */
-const META_SOURCE_OPTS: Array<{ v: MetaSource; label: string; hint: string }> = [
-  { v: 'auto', label: '自动（推荐）', hint: '豆瓣 → 图片搜索；填写自己的 TMDB 凭据后优先查询 TMDB' },
-  { v: 'tmdb', label: '仅 TMDB', hint: '只用 TMDB（需先填自己的 API Key；无演职员时留空即可）' },
-  { v: 'douban', label: '仅豆瓣', hint: '只用豆瓣（中文片名覆盖好；详情页无演职员/推荐区块）' },
-  { v: 'search', label: '仅搜索', hint: '只用图片搜索兜底封面；简介回落源自带简介' },
-];
 
 interface Draft {
   name: string;
@@ -111,7 +103,6 @@ export default function ConfigPage() {
   const [metaDraft, setMetaDraft] = useState<MetaSettings>({ ...DEFAULT_META_SETTINGS });
   const [metaDirty, setMetaDirty] = useState(false);
   const [metaMsg, setMetaMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
-  const metaHasKey = !!metaDraft.tmdbApiKey.trim();
   useEffect(() => {
     client
       .metaGetSettings()
@@ -125,6 +116,8 @@ export default function ConfigPage() {
       const s = await client.metaSetSettings(metaDraft);
       setMetaDraft({ tmdbApiKey: s.tmdbApiKey, tmdbApiBase: s.tmdbApiBase, tmdbImageBase: s.tmdbImageBase, metaSource: s.metaSource });
       setMetaDirty(false);
+      localStorage.setItem('winbox-meta-revision', String(Date.now()));
+      window.dispatchEvent(new Event('winbox:meta-changed'));
       setMetaMsg({ text: '✓ 已保存，立即生效。', kind: 'ok' });
     } catch (e) {
       setMetaMsg({ text: `保存失败：${(e as Error).message}`, kind: 'err' });
@@ -1455,22 +1448,9 @@ export default function ConfigPage() {
         <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
           发现页默认使用国内榜单，电影热搜来自百度。保存自己的 TMDB 凭据后，发现页与分类改用 TMDB；清空凭据恢复国内榜单。
         </div>
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
-          <span className="muted" style={{ fontSize: 11 }}>来源策略：</span>
-          {META_SOURCE_OPTS.map((o) => (
-            <span
-              key={o.v}
-              className={`tag ${metaDraft.metaSource === o.v ? 'active' : ''} ${o.v === 'tmdb' && !metaHasKey ? 'disabled' : ''}`}
-              onClick={() => {
-                if (o.v === 'tmdb' && !metaHasKey) return; // 未填用户 API 时「仅 TMDB」不可选
-                setMetaDraft({ ...metaDraft, metaSource: o.v as MetaSource });
-                setMetaDirty(true);
-              }}
-              title={o.hint}
-            >
-              {o.label}{metaDraft.metaSource === o.v ? ' ✓' : ''}
-            </span>
-          ))}
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+          封面优先级：已配置的 TMDB → 源自带封面 → 豆瓣 → 暂无封面。未配置 TMDB 时直接使用源封面。
+          图片搜索仅用于详情页背景图，简介使用源提供的信息。
         </div>
         <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
           {metaMsg?.text}

@@ -158,7 +158,7 @@ declare global {
         fetch: (episodeId: number, source: string) => Promise<IpcResult<string>>;
       };
       meta: {
-        search: (name: string, year?: string) => Promise<IpcResult<MetaHit | null>>;
+        search: (name: string, year?: string, provider?: 'tmdb' | 'douban') => Promise<IpcResult<MetaHit | null>>;
         /** ★ 详情页增强：演职员/类型/相关推荐 */
         extra: (name: string, year?: string) => Promise<IpcResult<MetaExtra | null>>;
         /** ★ 发现页榜单（无源默认主页） */
@@ -406,7 +406,7 @@ export const client = {
     unwrap(window.api.danmaku.episodes(bangumiId, animeTitle, source)),
   danmakuFetch: (episodeId: number, source: string) => unwrap(window.api.danmaku.fetch(episodeId, source)),
   // TMDB 元数据补全（缺封面/缺简介兜底，凭据内置密文）
-  metaSearch: (name: string, year?: string) => unwrap(window.api.meta.search(name, year)),
+  metaSearch: (name: string, year?: string, provider?: 'tmdb' | 'douban') => unwrap(window.api.meta.search(name, year, provider)),
   /** ★ 详情页增强：演职员/类型/相关推荐 */
   metaExtra: (name: string, year?: string) => unwrap(window.api.meta.extra(name, year)),
   /** ★ 发现页榜单（无源默认主页；refresh 绕过 6h 缓存） */

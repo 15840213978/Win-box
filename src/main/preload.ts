@@ -150,7 +150,7 @@ const api = {
   },
   meta: {
     // 元数据补全；TMDB 仅在用户配置凭据后启用。
-    search: (name: string, year?: string) => invoke<MetaHit | null>(IPC.META_SEARCH, name, year),
+    search: (name: string, year?: string, provider?: 'tmdb' | 'douban') => invoke<MetaHit | null>(IPC.META_SEARCH, name, year, provider),
     // ★ 详情页增强：演职员/类型/相关推荐（详情页下方区块）
     extra: (name: string, year?: string) => invoke<MetaExtra | null>(IPC.META_EXTRA, name, year),
     // ★ 发现页榜单（无源时的默认主页；refresh=true 绕过 6h 缓存）

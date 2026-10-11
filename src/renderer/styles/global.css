@@ -602,13 +602,16 @@ tr.active-row { background: var(--accent-soft) !important; outline: 1px solid rg
   width: 14px; height: 14px; border-radius: 50%;
   background: #fff; box-shadow: 0 0 6px rgba(0, 0, 0, .5); transition: bottom .1s linear;
 }
-.vplayer:fullscreen { border-radius: 0; cursor: none; }
+.vplayer:fullscreen { border-radius: 0; }
 /*
-   全屏时窗口已经占满屏幕，屏幕边缘不应再显示可用于拖拽窗口的光标。
-   HTML5 全屏使用 :fullscreen；MPV 使用 BrowserWindow 原生全屏，由根节点
-   data-player-fullscreen 标记。按钮自身仍可按需要覆盖为 pointer。
+   全屏光标跟随操作栏状态：移动时显示，播放中静止后隐藏。
+   HTML5 使用 :fullscreen，MPV 使用 vfull；边缘缩放由主进程 setResizable 管理，
+   不在整个窗口上强制 cursor:none，以免视频区域只有碰到按钮才显示光标。
 */
-:root[data-player-fullscreen] .app.pwin { cursor: none; }
+.vplayer:fullscreen,
+.vplayer.vfull { cursor: default; }
+.vplayer:fullscreen:not(.vui),
+.vplayer.vfull:not(.vui) { cursor: none; }
 /* ★ 2026-09-28（用户要求）：说明页（详细免责声明 + 开源/赞助入口） */
 /* ---- 说明页（免责声明）----
    ★ 2026-09-29（用户报「文本只占半边、还要下滑」）：① **整块居中**；② 宽屏**两列平铺**（左右都铺开、

@@ -206,7 +206,7 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
   registerHandler(IPC.DANMAKU_FETCH, (_e: any, episodeId: number, source?: string) =>
     host.danmakuFetch(Number(episodeId), source ? String(source) : ''), log);
   // TMDB 元数据补全（缺封面/缺简介兜底；凭据内置密文，仅查询）
-  registerHandler(IPC.META_SEARCH, (_e: any, name: string, year?: string) => host.metaSearch(String(name || ''), year ? String(year) : undefined), log);
+  registerHandler(IPC.META_SEARCH, (_e: any, name: string, year?: string, provider?: string) => host.metaSearch(String(name || ''), year ? String(year) : undefined, provider === 'tmdb' || provider === 'douban' ? provider : undefined), log);
   // ★ 2026-09-24：详情页增强（演职员/类型/相关推荐）与发现页榜单（无源默认主页）
   registerHandler(IPC.META_EXTRA, (_e: any, name: string, year?: string) => host.metaExtra(String(name || ''), year ? String(year) : undefined), log);
   registerHandler(IPC.META_DISCOVER, (_e: any, refresh?: boolean) => host.metaDiscover(!!refresh), log);

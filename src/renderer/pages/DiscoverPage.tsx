@@ -4,50 +4,20 @@
 //   ② 分类（国内标签推荐分页，与 TMDB 类型 ID 解耦）
 // 交互：点任意影片 → 走 `#/search?agg=<片名>` 用「源」做一次全源搜索（没源时提示去导入）。
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { openSearchWindow } from '../lib/searchWin';
 import { useTheme } from '../lib/theme';
 import HScrollRow from '../components/HScrollRow';
-import HeroBackdrop from '../components/HeroBackdrop';
+import { useCovers } from '../lib/useCovers';
 import type { DiscoverItem, DiscoverSection, DiscoverGenre } from '../../shared/types';
 
-/** 影片卡（推荐区与分类区共用）：点击 → 全源搜索该片名；onHover 用于让 Hero 跟随鼠标（Netflix / Apple 皮肤）
+/** 影片卡（推荐区与分类区共用）：点击 → 全源搜索该片名。
    *  playBadge ★ 2026-09-29：仅 Apple 皮肤渲染的「悬停播放徽标」—— 只在 Apple 下渲染元素，
    *  其余皮肤零痕迹（不依赖别处补 `display:none`）。
    *  dbPlay/dbYear ★ 2026-10-08（豆风）：海报墙卡 —— 悬停浮出圆形播放钮 + 左下角年份角标（豆瓣海报墙观感）。 */
-function ItemCard({ it, onOpen, onHover, playBadge, dbPlay, dbYear }: { it: DiscoverItem; onOpen: () => void; onHover?: () => void; playBadge?: boolean; dbPlay?: boolean; dbYear?: boolean }) {
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const [poster, setPoster] = useState(it.poster);
-  const [broken, setBroken] = useState(!it.poster);
-  const [searched, setSearched] = useState(false);
-  const [nearViewport, setNearViewport] = useState(false);
-  useEffect(() => { setPoster(it.poster); setBroken(!it.poster); setSearched(false); }, [it.poster, it.title, it.year]);
-  useEffect(() => {
-    const node = cardRef.current;
-    if (!node || !broken || searched) return;
-    if (!('IntersectionObserver' in window)) { setNearViewport(true); return; }
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        setNearViewport(true);
-        observer.disconnect();
-      }
-    }, { rootMargin: '500px 300px' });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [broken, searched, it.title]);
-  useEffect(() => {
-    if (!broken || searched || !nearViewport) return;
-    let alive = true;
-    void client.metaDiscoverImages(it.title, it.mediaType, it.year ? String(it.year) : undefined, 'poster')
-      .then(images => { if (alive && images.posters[0]) { setPoster(images.posters[0]); setBroken(false); } })
-      .catch(() => undefined)
-      .finally(() => { if (alive) setSearched(true); });
-    return () => { alive = false; };
-  }, [broken, searched, nearViewport, it.title, it.mediaType, it.year]);
+function ItemCard({ it, poster, onError, onOpen, playBadge, dbPlay, dbYear }: { it: DiscoverItem; poster: string; onError: (url: string) => void; onOpen: () => void; playBadge?: boolean; dbPlay?: boolean; dbYear?: boolean }) {
   return (
     <div
-      ref={cardRef}
       className="card-media"
       style={{ cursor: 'pointer' }}
       role="button"
@@ -60,12 +30,11 @@ function ItemCard({ it, onOpen, onHover, playBadge, dbPlay, dbYear }: { it: Disc
           onOpen();
         }
       }}
-      onMouseEnter={onHover}
       title={`${it.title}${it.year ? ` (${it.year})` : ''} · 点击全源搜索`}
     >
       <div className="card">
         <div style={{ position: 'relative' }}>
-          {poster && !broken ? <img src={poster} loading="lazy" decoding="async" onError={() => setBroken(true)} /> : <div className="no-cover">{searched ? '暂无封面' : '正在补全封面…'}</div>}
+          {poster ? <img src={poster} loading="lazy" decoding="async" onError={e => onError(e.currentTarget.getAttribute('src') || '')} /> : <div className="no-cover">暂无封面</div>}
           {playBadge && (
             <span className="ap-card-play" aria-hidden="true">
               <svg width="13" height="13" viewBox="0 0 16 16"><path d="M4.9 2.9v10.2l8-5.1-8-5.1Z" fill="currentColor" /></svg>
@@ -88,15 +57,11 @@ function ItemCard({ it, onOpen, onHover, playBadge, dbPlay, dbYear }: { it: Disc
 }
 
 export default function DiscoverPage() {
-  const nav = useNavigate();
-  /** ★ 2026-09-24：Netflix 皮肤下用「Hero 大图 + 横向内容行」的影院式布局
-   *  ★ 2026-09-29：Apple 皮肤同样启用 Hero（Apple TV app 的「精选轮播 + 内容栏」），
-   *    但版式与配色走 apple.css（圆角剧照卡 + 页码圆点 + 内容栏），与 Netflix 满屏影院风区分。 */
-  const nf = useTheme() === 'netflix';
-  const ap = useTheme() === 'apple';
-  // ★ 2026-10-08（豆风）：海报墙皮肤 —— 不做 Hero，走「分类 pill + 海报网格」
-  const db = useTheme() === 'douban';
-  const heroSkin = nf || ap;
+  // 发现页直接展示分类与榜单；Netflix / Apple 保留横向内容行，豆风使用海报网格。
+  const theme = useTheme();
+  const nf = theme === 'netflix';
+  const ap = theme === 'apple';
+  const db = theme === 'douban';
   const [sections, setSections] = useState<DiscoverSection[] | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
@@ -116,6 +81,8 @@ export default function DiscoverPage() {
   const [genreError, setGenreError] = useState('');
   /** ★ 2026-10-08（豆风）：海报墙当前分区（顶部 pill 切换 —— 替代「一行行横滑」的堆叠布局） */
   const [wallSec, setWallSec] = useState(0);
+  const coverItem = (it: DiscoverItem) => ({ id: String(it.tmdbId), name: it.title, year: it.year ? String(it.year) : undefined, pic: it.poster });
+  const covers = useCovers((gSel ? gItems : (db ? sections?.[wallSec]?.items || [] : sections?.flatMap(s => s.items) || [])).map(coverItem));
 
   const goSearch = (title: string): void => { void openSearchWindow(title).catch((e) => window.alert(String(e))); };
 
@@ -185,127 +152,11 @@ export default function DiscoverPage() {
 
   const genreList = media === 'movie' ? genres.movie : media === 'tv' ? genres.tv : [];
   const hasGenres = genres.movie.length > 0 || genres.tv.length > 0;
-  /**
-   * Hero 主推片：★ 2026-09-24 用户要求 —— 不只固定第一张：
-   *   ① 鼠标移到任意卡片上 → 立刻换成那一部；
-   *   ② 鼠标离开后**自动轮播**（8s 一部，取首行条目）。
-   */
-  const [heroItem, setHeroItem] = useState<DiscoverItem | null>(null);
-  const [heroArt, setHeroArt] = useState<{ item: DiscoverItem; urls: string[] } | null>(null);
-  const heroArtKey = heroArt ? `${heroArt.item.mediaType}|${heroArt.item.title}|${heroArt.item.year}` : '';
-  const artworkLoading = useRef(false);
-  const hoveringRef = useRef(false);
-  const firstRow = sections && sections.length > 0 ? sections[0].items : [];
-  const hero = heroItem || firstRow[0] || null;
-  useEffect(() => {
-    if (!heroSkin || firstRow.length === 0) return;
-    let i = 0;
-    const timer = setInterval(() => {
-      if (hoveringRef.current || artworkLoading.current) return; // 正在搜图时不抢先切片
-      i = (i + 1) % firstRow.length;
-      setHeroItem(firstRow[i]);
-    }, 8000);
-    return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [heroSkin, sections]);
-
-  // ---- Hero 背景剧照：随主推片切换而重取（主进程 24h 缓存）----
-  // ★ 2026-09-25：**背景只允许横版图**（用户报「竖版图被裁剪」）——优先 `images.backdrops`，
-  //   取不到才用榜单自带的 `backdrop_path`（同样是横版剧照）；**绝不再退回竖版封面**（poster）。
-  // 图片与片名一起切换；搜索失败时保留上一部已加载的完整 Hero，不给旧图配新片名。
-  const artworkCache = useRef(new Map<string, string[]>());
-  const artworkRequests = useRef(new Map<string, Promise<string[]>>());
-  useEffect(() => {
-    if (!heroSkin || !hero) return;
-    let alive = true;
-    const key = `${hero.mediaType}|${hero.title}|${hero.year}`;
-    const loadArtwork = async (): Promise<string[]> => {
-      const cached = artworkCache.current.get(key);
-      if (cached) return cached;
-      let job = artworkRequests.current.get(key);
-      if (!job) {
-        job = client.metaDiscoverImages(hero.title, hero.mediaType, hero.year ? String(hero.year) : undefined)
-          .then(async imgs => {
-            const urls = [...(imgs.backdrops || []), ...(hero.backdrop ? [hero.backdrop] : [])];
-            // 主进程下载 + 浏览器实际解码两道校验；坏图不切进 Hero。
-            const good: string[] = [];
-            for (const url of urls.slice(0, 4)) {
-              const loaded = await new Promise<boolean>(resolve => {
-                const image = new Image();
-                const timer = setTimeout(() => { image.onload = image.onerror = null; resolve(false); }, 8000);
-                image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth / image.naturalHeight >= 1.4); };
-                image.onerror = () => { clearTimeout(timer); resolve(false); };
-                image.src = url;
-              });
-              if (loaded) good.push(url);
-            }
-            if (good.length) artworkCache.current.set(key, good);
-            return good;
-          }).catch(() => []).finally(() => artworkRequests.current.delete(key));
-        artworkRequests.current.set(key, job);
-      }
-      return job;
-    };
-    artworkLoading.current = true;
-    // 快速掠过卡片不发搜图请求。
-    const delay = setTimeout(() => {
-    void loadArtwork().then(urls => {
-      if (!alive) return;
-      artworkLoading.current = false;
-      if (urls.length) setHeroArt({ item: hero, urls });
-      else if (heroArtKey === key) setHeroArt(null);
-    });
-    }, 250);
-    return () => { alive = false; artworkLoading.current = false; clearTimeout(delay); };
-  }, [heroSkin, hero?.title, hero?.year, hero?.mediaType, hero?.backdrop]);
-
-  const displayedHero = heroArt?.item;
-
   return (
     <>
-      <div
-        className="content"
-        onMouseLeave={() => { hoveringRef.current = false; }}
-      >
+      <div className="content">
         {/* ★ 2026-09-24（用户定稿）：原来那排「发现 ……… 【刷新】」整排删除（标题与刷新按钮都属冗余）；
             ★ 2026-09-26（用户指令）：无源时的「还没有导入任何源 —— 去导入源」提示条也整条删除。 */}
-        {/* ---- Hero：Netflix = 满屏横版剧照轮播（保持比例 + 比例外模糊填充）；
-               Apple = Apple TV app 的「精选轮播」（圆角剧照卡 + 标题/按钮 + 页码圆点）---- */}
-        {heroSkin && displayedHero && !gSel && (
-          <div className={nf ? 'nf-hero' : 'ap-hero'}>
-            <HeroBackdrop urls={heroArt!.urls} fit={nf ? 'contain' : 'cover'} />
-            <div className={nf ? 'nf-hero-body' : 'ap-hero-body'} key={`${displayedHero.title}-${displayedHero.year || ''}`}>
-              <div className={nf ? 'nf-hero-kicker' : 'ap-hero-kicker'}>{nf ? 'WIN-BOX 精选' : '精选推荐'}</div>
-              <h1 className={nf ? 'nf-hero-title' : 'ap-hero-title'}>{displayedHero.title}</h1>
-              <div className={nf ? 'nf-hero-meta' : 'ap-hero-meta'}>
-                <span className={nf ? 'nf-hero-match' : 'ap-hero-match'}>精选推荐</span>
-                {displayedHero.year ? <span>{displayedHero.year}</span> : null}
-                <span>{displayedHero.mediaType === 'tv' ? '剧集' : '电影'}</span>
-                <span>{sections?.find(s => s.items.some(it => it.title === displayedHero.title))?.title || ''}</span>
-              </div>
-              <div className={nf ? 'nf-hero-actions' : 'ap-hero-actions'}>
-                <button className={nf ? 'nf-play-btn' : 'ap-play-btn'} onClick={() => goSearch(displayedHero.title)}>▶ 播放</button>
-                <button className={nf ? undefined : 'ap-btn-2'} onClick={() => goSearch(displayedHero.title)}>更多信息</button>
-              </div>
-            </div>
-            {/* Apple TV 式页码圆点（可点选切换主推片；自动轮播仍每 8s 前进） */}
-            {ap && firstRow.length > 1 && (
-              <div className="ap-hero-dots">
-                {firstRow.slice(0, 8).map((it, i) => (
-                  <button
-                    type="button"
-                    key={`${it.title}-${i}`}
-                    className={'ap-dot' + (displayedHero.title === it.title ? ' active' : '')}
-                    aria-label={`切换到 ${it.title}`}
-                    aria-current={displayedHero.title === it.title ? 'true' : undefined}
-                    title={it.title}
-                    onClick={() => setHeroItem(it)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
         {/* ---- 分类条（父分类：电影/剧集；子分类：类型标签 —— 父分类未点击前不展示子分类）---- */}
         {/* ★ 2026-10-08（豆风）：改成豆瓣式「标签行」（左侧小标签 + 右侧胶囊 chips），与顶栏胶囊导航同一套观感 */}
         {hasGenres && db && (
@@ -357,7 +208,7 @@ export default function DiscoverPage() {
               <>
                 <div className="grid">
                   {gItems.map((it, i) => (
-                    <ItemCard key={`${it.title}-${i}`} it={it} onOpen={() => goSearch(it.title)} dbPlay={db} dbYear={db} />
+                    <ItemCard key={`${it.title}-${i}`} it={it} poster={covers.picOf(coverItem(it))} onError={url => covers.onError(coverItem(it), url)} onOpen={() => goSearch(it.title)} dbPlay={db} dbYear={db} />
                   ))}
                 </div>
                 {gTotal > 1 && (
@@ -404,7 +255,7 @@ export default function DiscoverPage() {
               </div>
               <div className="grid db-wall-grid" key={`wall-${wallSec}`}>
                 {((sections || [])[Math.min(wallSec, Math.max(0, (sections || []).length - 1))]?.items || []).map((it, i) => (
-                  <ItemCard key={`${it.title}-${i}`} it={it} onOpen={() => goSearch(it.title)} dbPlay dbYear />
+                  <ItemCard key={`${it.title}-${i}`} it={it} poster={covers.picOf(coverItem(it))} onError={url => covers.onError(coverItem(it), url)} onOpen={() => goSearch(it.title)} dbPlay dbYear />
                 ))}
               </div>
             </div>
@@ -423,10 +274,10 @@ export default function DiscoverPage() {
                     <div key={`${it.title}-${i}`} style={nf ? undefined : { flex: ap ? '0 0 168px' : '0 0 132px', minWidth: 0 }}>
                       <ItemCard
                         it={it}
+                        poster={covers.picOf(coverItem(it))}
+                        onError={url => covers.onError(coverItem(it), url)}
                         playBadge={ap}
                         onOpen={() => goSearch(it.title)}
-                        // Netflix / Apple 皮肤：鼠标移到卡片 → Hero 立刻换成这一部（离开后恢复自动轮播）
-                        onHover={heroSkin ? () => { hoveringRef.current = true; setHeroItem(it); } : undefined}
                       />
                     </div>
                   ))}

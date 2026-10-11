@@ -67,6 +67,14 @@ export function parseDoubanSearch(json: unknown): MetaHit[] {
 /** 与 TMDB 缓存区隔开的键前缀（meta.json cache 的 key 形如 `<名称>|<year>`，防两 provider 互相覆盖） */
 export const DOUBAN_CACHE_PREFIX = 'db:';
 
+/** 只接受同名影片；有年份时必须一致，避免同名旧作或续集的封面串片。 */
+export function matchingDoubanCovers(candidates: MetaHit[], name: string, year?: string): MetaHit[] {
+  const normalize = (value: string): string => value.normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+  const title = normalize(name);
+  const expectedYear = /^\d{4}$/.test(year || '') ? Number(year) : undefined;
+  return candidates.filter(hit => normalize(hit.title) === title && (!expectedYear || hit.year === expectedYear));
+}
+
 interface RexxarResp {
   status: number;
   text: string;
@@ -181,8 +189,7 @@ async function verifyDoubanPoster(url: string): Promise<boolean> {
  * - 结果直接以经 /img 中继的 URL 存入 hit.poster（渲染层可直接显示）。
  * 注意：本模块不做磁盘缓存（缓存归 MetaStore，key 带 DOUBAN_CACHE_PREFIX 由调用方写入）。
  */
-export async function doubanSearchTitle(logger: Logger, name: string): Promise<MetaHit | null> {
-  if (!isCjkName(name || '')) return null;
+export async function doubanSearchTitle(logger: Logger, name: string, year?: string): Promise<MetaHit | null> {
   if (doubanBreakerOpen()) return null; // 风控熔断中：不发请求（链路自动退到 360 图片兜底）
   const q = encodeURIComponent((name || '').trim());
   if (!q) return null;
@@ -200,7 +207,7 @@ export async function doubanSearchTitle(logger: Logger, name: string): Promise<M
       try {
         candidates.push(...parseDoubanSearch(JSON.parse(resp.text)));
       } catch { /* json 异常忽略 */ }
-      if (candidates.length > 0) break; // 首个有结果的类型即用（movie 优先）
+      if (matchingDoubanCovers(candidates, name, year).length > 0) break;
     } else if (resp.status !== 0) {
       // 403/429 计熔断（日志只在未熔断期间打印，避免风控期刷屏 —— 实测曾一次会话 43 条）
       if (noteDoubanStatus(resp.status)) {
@@ -211,7 +218,7 @@ export async function doubanSearchTitle(logger: Logger, name: string): Promise<M
     }
   }
   if (candidates.length === 0) return null;
-  for (const cand of candidates.slice(0, 6)) {
+  for (const cand of matchingDoubanCovers(candidates, name, year).slice(0, 6)) {
     if (await verifyDoubanPoster(cand.poster)) {
       return { ...cand, poster: `${IMG_PROXY}?u=${encodeURIComponent(cand.poster)}` };
     }

@@ -1,11 +1,7 @@
 // src/shared/meta.ts
 // 元数据（封面/简介/演职员）来源配置 —— 主进程 Provider 与渲染层配置页共用。
-// ★ 口径（2026-09-24 用户定稿）：
-//   - auto  ：豆瓣 → 360 图搜；用户配置 TMDB 后优先查询 TMDB
-//   - tmdb  ：仅 TMDB（**必须用户自填 API**，内置凭据不作为「仅 TMDB」的依据）
-//   - douban：仅豆瓣
-//   - search：仅 360 图搜（只对封面有效；简介回落源自带简介）
-//   该策略约束元数据查询；发现页默认国内榜单，用户配置 TMDB 凭据后使用 TMDB。
+// 封面固定使用：用户配置的 TMDB → 源封面 → 豆瓣 → 暂无封面。
+// MetaSource 保留以兼容旧配置，不再控制封面；图片搜索只用于详情背景图。
 
 export type MetaSource = 'auto' | 'tmdb' | 'douban' | 'search';
 
