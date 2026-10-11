@@ -646,8 +646,9 @@ tr.active-row { background: var(--accent-soft) !important; outline: 1px solid rg
 .vp-subdot { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: #5be08b; }
 .vp-subpanel { position: absolute; right: 12px; bottom: 60px; width: 340px; max-height: 280px; overflow: auto; z-index: 20;
   color: var(--text); background: var(--bg-glass, rgba(18,20,26,.94)); border: 1px solid var(--border); border-radius: 10px; padding: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
-.vp-panelhost { position: absolute; right: 12px; bottom: 34px; padding-bottom: 12px; z-index: 20; }
-.vp-panelhost .vp-subpanel { position: static; max-width: calc(100vw - 48px); max-height: min(380px, calc(100vh - 140px)); }
+.vp-popup-anchor { position: relative; display: inline-flex; align-items: center; flex: none; }
+.vp-panelhost { position: absolute; left: 50%; bottom: 100%; padding-bottom: 8px; z-index: 20; }
+.vp-panelhost .vp-subpanel { position: static; box-sizing: border-box; max-width: 100%; max-height: min(380px, calc(100vh - 140px)); }
 .vsp-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .vsp-label { font-size: 11px; width: 34px; }
 .vsp-input { flex: 1; min-width: 0; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border);

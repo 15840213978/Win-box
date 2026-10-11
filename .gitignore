@@ -4,6 +4,7 @@ dist/
 release*/
 *.log
 __pycache__/
+imports/
 npm-debug.log*
 .DS_Store
 Thumbs.db

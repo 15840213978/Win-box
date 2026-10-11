@@ -85,6 +85,29 @@ function bean(key: string): SourceBean {
 }
 
 describe('SpiderHost — 切源（ui-only 变更）不得触发重活', () => {
+  it('source/profile deletion cleans owned imports after persisting configuration', () => {
+    const host = new SpiderHost();
+    const dir = (globalThis as unknown as { __shostDir: string }).__shostDir;
+    try {
+      const cleanupRemoved = vi.fn();
+      host.localPkgs = { rootOf: () => null, readSubscription: () => null, cleanupRemoved };
+      host.cfgAddSource(bean('cleanup'));
+      const profile = host.cfgSaveAsProfile('keep-copy');
+      host.cfgSaveAsProfile('active-copy');
+      host.cfgDeleteSource('cleanup');
+      expect(cleanupRemoved).toHaveBeenCalledTimes(1);
+      expect(cleanupRemoved.mock.calls[0][0].sources.some((s: SourceBean) => s.key === 'cleanup')).toBe(true);
+      expect(cleanupRemoved.mock.calls[0][1].sources.some((s: SourceBean) => s.key === 'cleanup')).toBe(false);
+      host.cfgDeleteProfile(profile.id);
+      expect(cleanupRemoved).toHaveBeenCalledTimes(2);
+      expect(cleanupRemoved.mock.calls[1][0].profiles.some((p: { id: string }) => p.id === profile.id)).toBe(true);
+      expect(cleanupRemoved.mock.calls[1][1].profiles.some((p: { id: string }) => p.id === profile.id)).toBe(false);
+      expect(() => host.cfgDeleteProfile(host.cfgSnapshot().activeProfileId)).toThrow('当前');
+      expect(cleanupRemoved).toHaveBeenCalledTimes(2);
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
   it('★ cfgSetActiveSource 不清蜘蛛实例缓存、不清全源搜索缓存', () => {
     const host = new SpiderHost();
     const dir = (globalThis as unknown as { __shostDir: string }).__shostDir;

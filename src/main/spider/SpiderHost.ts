@@ -501,6 +501,21 @@ export class SpiderHost {
     return this.manager.snapshot();
   }
 
+  initializeLocalImports(): void {
+    try {
+      const before = this.manager.snapshot();
+      const after = this.localPkgs?.migrateConfig?.(before, message => this.logger.w(message));
+      if (after && JSON.stringify(after) !== JSON.stringify(before)) this.manager.restore(after);
+    } catch (e) {
+      this.logger.w(`本地导入副本迁移失败（原文件保留）：${(e as Error).message}`);
+    }
+  }
+
+  private cleanupLocalImports(before: UserConfig): void {
+    try { this.localPkgs?.cleanupRemoved?.(before, this.manager.snapshot()); }
+    catch (e) { this.logger.w(`本地导入副本清理失败：${(e as Error).message}`); }
+  }
+
   cfgAddSource(raw: SourceBean): SourceBean {
     const bean = this.manager.addSource(raw);
     return bean;
@@ -511,7 +526,9 @@ export class SpiderHost {
   }
 
   cfgDeleteSource(key: string): void {
+    const before = this.manager.snapshot();
     this.manager.deleteSource(key);
+    this.cleanupLocalImports(before);
   }
 
   cfgMoveSource(key: string, direction: SourceMoveDirection): void {
@@ -551,7 +568,9 @@ export class SpiderHost {
     this.manager.activateProfile(id);
   }
   cfgDeleteProfile(id: string): void {
+    const before = this.manager.snapshot();
     this.manager.deleteProfile(id);
+    this.cleanupLocalImports(before);
   }
   cfgUpdateProfileName(id: string, name: string): void {
     this.manager.updateProfileName(id, name);

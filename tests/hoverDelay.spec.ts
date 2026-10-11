@@ -3,6 +3,35 @@ import { makeHoverDelay } from '../src/renderer/lib/hoverDelay';
 
 afterEach(() => vi.useRealTimers());
 describe('player hover delay', () => {
+  it('opening another panel closes the current one and cancels its stale timers', () => {
+    vi.useFakeTimers();
+    let visible: string | null = null;
+    const panels: ReturnType<typeof makeHoverDelay>[] = [];
+    for (const name of ['subtitle', 'danmaku', 'volume']) {
+      panels.push(makeHoverDelay(open => {
+        if (open) {
+          panels.forEach(panel => panel.cancel());
+          visible = name;
+        } else if (visible === name) visible = null;
+      }));
+    }
+    panels[0].enter();
+    vi.advanceTimersByTime(250);
+    expect(visible).toBe('subtitle');
+    panels[0].leave();
+    panels[1].enter();
+    vi.advanceTimersByTime(250);
+    expect(visible).toBe('danmaku');
+    vi.advanceTimersByTime(100);
+    expect(visible).toBe('danmaku');
+    panels[1].leave();
+    panels[2].enter();
+    vi.advanceTimersByTime(250);
+    expect(visible).toBe('volume');
+    panels[2].leave();
+    vi.advanceTimersByTime(300);
+    expect(visible).toBeNull();
+  });
   it('does not open while merely passing over the trigger', () => {
     vi.useFakeTimers();
     const change = vi.fn();

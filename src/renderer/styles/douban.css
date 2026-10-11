@@ -177,14 +177,14 @@
 :root[data-theme='douban'] .tb-btn.tb-pin-on:hover { color: var(--accent); background: rgba(46, 150, 41, .2); }
 
 /* ★ 播放器窗口（`pvwin`）整窗深色：观看时不要浅色面板（详情窗口同用 .app.pwin，但保持浅色页面） */
-:root[data-theme='douban'] .app.pwin.pvwin,
-:root[data-theme='douban'] .app.pwin.pvwin .main { background: #000; }
-:root[data-theme='douban'] .app.pwin.pvwin .titlebar { background: #0F0F13; border-bottom: none; }
-:root[data-theme='douban'] .app.pwin.pvwin .tb-title { color: #ECECF2; }
-:root[data-theme='douban'] .app.pwin.pvwin .tb-btn { color: #9C99A8; }
-:root[data-theme='douban'] .app.pwin.pvwin .tb-btn:hover { background: rgba(255, 255, 255, .14); color: #fff; }
-:root[data-theme='douban'] .app.pwin.pvwin .tb-btn.tb-close:hover { background: #E5484D; color: #fff; }
-:root[data-theme='douban'] .app.pwin.pvwin .tb-btn.tb-pin-on { color: var(--accent-2); background: rgba(255, 255, 255, .16); }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin,
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .main { background: #000; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .titlebar { background: #0F0F13; border-bottom: none; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .tb-title { color: #ECECF2; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .tb-btn { color: #9C99A8; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .tb-btn:hover { background: rgba(255, 255, 255, .14); color: #fff; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .tb-btn.tb-close:hover { background: #E5484D; color: #fff; }
+:root[data-theme='douban']:not([data-mpv]) .app.pwin.pvwin .tb-btn.tb-pin-on { color: var(--accent-2); background: rgba(255, 255, 255, .16); }
 :root[data-theme='douban'] .mini-strip { background: rgba(15, 15, 19, .6); color: #C9C6D2; }
 /* mpv 内核：标题栏/小窗条改浮层（global.css 已给深色渐变），此处保证字色仍是浅色 */
 :root[data-theme='douban'][data-mpv] .app.pwin.pvwin .tb-title { color: #F2F2F7; }

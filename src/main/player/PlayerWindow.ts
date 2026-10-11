@@ -111,6 +111,20 @@ let fullscreenBounds: Electron.Rectangle | null = null;
 let fullscreenActive = false;
 
 /**
+ * Restore the bounds captured immediately before entering native fullscreen.
+ * The native `leave-full-screen` event is the source of truth here: transparent
+ * windows may report `isFullScreen() === false` even while the native transition
+ * is active, so checking only that method can leave the window at fullscreen bounds.
+ */
+function restoreFullscreenBounds(w: BrowserWindow): void {
+  const bounds = fullscreenBounds;
+  if (!bounds || w.isDestroyed() || fullscreenActive) return;
+  if (w.isMaximized()) w.unmaximize();
+  w.setBounds(bounds);
+  if (fullscreenBounds === bounds) fullscreenBounds = null;
+}
+
+/**
  * Electron changes fullscreen asynchronously on Windows.  Returning the
  * requested value here made the renderer briefly believe it had entered
  * fullscreen even when the native transition was still pending (and a fast
@@ -124,7 +138,13 @@ export function playerSetFullscreen(fullscreen: boolean): Promise<boolean> {
   fullscreenRequest = fullscreenRequest.then(async () => {
     const current = playerWin;
     if (!current || current.isDestroyed() || mini) return false;
-    if ((fullscreenActive || current.isFullScreen()) === wanted) return wanted;
+    const alreadyFullscreen = fullscreenActive || current.isFullScreen();
+    if (alreadyFullscreen === wanted) {
+      // Transparent Windows windows can report false after the native leave
+      // event before the saved normal bounds have been restored.
+      if (!wanted) restoreFullscreenBounds(current);
+      return wanted ? alreadyFullscreen : false;
+    }
     if (wanted) {
       fullscreenBounds = current.isMaximized() ? current.getNormalBounds() : current.getBounds();
       if (current.isMaximized()) current.unmaximize();
@@ -144,12 +164,16 @@ export function playerSetFullscreen(fullscreen: boolean): Promise<boolean> {
       else current.once('leave-full-screen', finish);
       current.setFullScreen(wanted);
     });
-    if (!wanted && !current.isDestroyed() && !current.isFullScreen() && fullscreenBounds) {
-      if (current.isMaximized()) current.unmaximize();
-      current.setBounds(fullscreenBounds);
-      fullscreenBounds = null;
+    if (current.isDestroyed()) return false;
+    const actual = fullscreenActive || current.isFullScreen();
+    if (!wanted) {
+      if (!fullscreenActive) restoreFullscreenBounds(current);
+      // The leave event is authoritative for transparent windows; never
+      // return a stale isFullScreen() value after the transition has ended.
+      return false;
     }
-    return !current.isDestroyed() && (fullscreenActive || current.isFullScreen());
+    if (!actual) fullscreenBounds = null;
+    return actual;
   });
   return fullscreenRequest;
 }
@@ -160,7 +184,13 @@ export function playerSetMini(isMini: boolean): void {
   if (!w || w.isDestroyed()) return;
   if (isMini === mini) return;
   if (isMini) {
-    if (w.isFullScreen()) w.setFullScreen(false);
+    // MPV fullscreen is event-backed because transparent windows can report
+    // false from isFullScreen().  Leave it first; otherwise the fullscreen
+    // bounds would be mistaken for the normal bounds of the mini window.
+    if (playerIsFullscreen()) {
+      void playerSetFullscreen(false).then(() => playerSetMini(true));
+      return;
+    }
     // 先记录正常边界：最大化时用 getNormalBounds()（Electron 记忆的还原边界）
     if (w.isMaximized()) {
       normalBounds = w.getNormalBounds();
@@ -245,6 +275,9 @@ export function openPlayerWindow(init: PlayerInit): void {
   playerWin.on('leave-full-screen', () => {
     if (playerWin && !playerWin.isDestroyed()) {
       fullscreenActive = false;
+      // Restore here, after the native leave event, rather than relying on
+      // BrowserWindow.isFullScreen(), which is unreliable for transparent windows.
+      restoreFullscreenBounds(playerWin);
       playerWin.webContents.invalidate();
       playerWin.webContents.send('player:fullscreen', false);
     }

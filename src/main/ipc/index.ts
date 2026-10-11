@@ -18,7 +18,6 @@ import {
 import { clearAppCache } from '../util/cacheClean';
 import { nameFromLocalFile } from '../util/importNaming';
 import { join, basename } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { IPC } from '../../shared/ipc-channels';
 import { LOCAL_PROXY_BASE } from '../../shared/constants';
 import { parseLive } from '../../engine/config/LiveConfigParser';
@@ -34,7 +33,6 @@ import type { DlnaCastTarget, DlnaDevice } from '../../shared/dlna';
 import type { DlnaService } from '../dlna/DlnaService';
 import type { UpdateProgress } from '../../shared/update';
 import type { UpdateService } from '../update/UpdateService';
-import { md5Hex } from '../../engine/util/md5';
 // 独立播放器窗口
 import { openPlayerWindow, playerSwitchEpisode, isPlayerOpen, closePlayerWindow, playerSetMini, playerIsMini, playerWindow, playerResendInit, onPlayerWindowClosed, isPlayerWindow, playerSetFullscreen, playerIsFullscreen } from '../player/PlayerWindow';
 // ★ 2026-10-08 MPV 高兼容播放内核（独立播放器窗口内嵌 --wid）
@@ -70,7 +68,9 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
   ipcMain.handle(IPC.WIN_MAXIMIZE, (e) => {
     const w = winOf(e);
     if (!w) return;
-    if (isPlayerWindow(w) && w.isFullScreen()) { void playerSetFullscreen(false); return; }
+    // Transparent player windows can report false from isFullScreen() on Windows;
+    // use the event-backed player state so a maximize click always exits player fullscreen.
+    if (isPlayerWindow(w) && playerIsFullscreen()) { void playerSetFullscreen(false); return; }
     if (w.isMaximized()) w.unmaximize();
     else w.maximize();
   });
@@ -341,7 +341,7 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
     }
   }, log);
 
-  // ★ 从本地 .py 文件导入为新的 py 源：选文件 → 复制到 userData 持久区 → 与 JSON 源一样入库/可切换
+  // 本地 .py：复制到安装目录 imports/py 后入库，不依赖原始文件。
   //   ★ 2026-09-27（用户要求）：源名/源 key 用**原始文件名**（去扩展名）——与本地 .json 同一命名口径
   registerHandler(IPC.CFG_IMPORT_PY_LOCAL, async (e: any): Promise<{ ok: boolean; key?: string; error?: string }> => {
     const win = winOf(e);
@@ -351,20 +351,17 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
     });
     if (picked.canceled || !picked.filePaths?.[0]) return { ok: false }; // 用户取消，不视为错误
     const srcPath = picked.filePaths[0];
+    let importedApi = '';
     try {
-      const content = readFileSync(srcPath);
-      if (content.length === 0) return { ok: false, error: '所选 .py 文件为空' };
-      // 落盘到 userData 持久区（可被引用但不受清理源缓存影响），api 记 file:// 绝对路径
-      const dir = join(userDataDir(), 'local-py');
-      mkdirSync(dir, { recursive: true });
-      const storeName = `${md5Hex(content.toString('utf8'))}.py`;
-      const storePath = join(dir, storeName);
-      if (!existsSync(storePath)) writeFileSync(storePath, content);
       const name = nameFromLocalFile(srcPath);
-      const api = pathToFileURL(storePath).href; // file:///C:/...
+      const api = importedApi = pkgs.importPython(srcPath);
       const bean = host.cfgAddSource({ key: name, name, type: 3, api, ext: '', jar: '' } as SourceBean);
       return { ok: true, key: bean.key };
     } catch (err) {
+      if (importedApi) {
+        try { pkgs.discardImport(importedApi, host.cfgSnapshot()); }
+        catch (cleanup) { log.w(`导入失败副本清理失败：${String(cleanup)}`); }
+      }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }, log);
@@ -372,8 +369,8 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
   /**
    * ★ 2026-09-29（用户要求）：导入**本地包**（影视壳/影视仓 目录包）。
    *
-   * 链路：选目录 → 在顶层找订阅 JSON（影视.json 优先）→ 登记包根（local-pkgs.json，就地引用）
-   *   → rewritePkgPaths 展开包内相对引用（`./py/x.py` → file:// 就地运行；其余 → /pkg/<i>/…）
+   * 链路：选目录 → 在顶层找订阅 JSON → 复制到安装目录 imports/packages 并登记副本
+   *   → rewritePkgPaths 展开副本内相对引用（`./py/x.py` → file://；其余 → /pkg/<i>/…）
    *   → 走**正常订阅导入**（apiUrl 记 `pkg://<i>/<rel>`：重新导入/刷新同一条链路，见 SpiderHost.fetchConfigText）。
    *
    * 包内 html（homePage 网页源）由 /pkg 路由提供，点播页「网页」入口在独立窗口打开（fm 桥，见 WebHomeWindow）。
@@ -390,8 +387,9 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
     });
     if (picked.canceled || !picked.filePaths?.[0]) return { ok: false }; // 用户取消，不视为错误
     const root = picked.filePaths[0];
+    let importedUrl = '';
     try {
-      const found = pkgs.locateSubscription(root);
+      const found = pkgs.importSubscription(root);
       if (!found) {
         return {
           ok: false,
@@ -399,11 +397,11 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
         };
       }
       const name = nameFromLocalFile(root, customName); // 默认取包目录名
-      const url = pkgSubUrl(found.index, found.rel);
+      const url = importedUrl = pkgSubUrl(found.index, found.rel);
       const r = await host.importConfig({ url, name });
       return {
         ok: true,
-        root,
+        root: pkgs.rootOf(found.index) || root,
         rel: found.rel,
         sites: found.sites,
         name,
@@ -411,6 +409,10 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
         result: { config: r.config, report: r.report, warnings: r.warnings, urls: r.urls },
       };
     } catch (err) {
+      if (importedUrl) {
+        try { pkgs.discardImport(importedUrl, host.cfgSnapshot()); }
+        catch (cleanup) { log.w(`导入失败副本清理失败：${String(cleanup)}`); }
+      }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }, log);

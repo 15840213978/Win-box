@@ -4,6 +4,7 @@
 // 大播放键、加载态、错误提示+重试、闲置自动隐藏、直播标识。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useHoverDelay } from '../lib/useHoverDelay';
+import { usePlayerPanelPosition } from '../lib/usePlayerPanelPosition';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import { uiMem, setPlayTime } from '../lib/uiMemory';
@@ -355,6 +356,8 @@ export default function VideoPlayer(props: VideoPlayerProps) {
   const [kernel, setKernel] = useState<Kernel>('html5');
   const kernelRef = useRef<Kernel>('html5');
   kernelRef.current = kernel;
+  /** 防止连续点击在原生全屏退出完成前排入多个相反的内核切换。 */
+  const kernelSwitchRef = useRef<Kernel | null>(null);
   const kernelPrefRef = useRef<KernelPref>(kernelPref);
   kernelPrefRef.current = kernelPref;
   const [htmlSource, setHtmlSource] = useState<{ source: string; url: string; width?: number; height?: number } | null>(null);
@@ -530,7 +533,8 @@ export default function VideoPlayer(props: VideoPlayerProps) {
 
   /** 手动切换内核（记住选择；mpv 侧/HTML5 侧都从当前位置续播） */
   const switchKernel = (k: Kernel, persist = true) => {
-    if (k === kernelRef.current) return;
+    if (kernelSwitchRef.current || k === kernelRef.current) return;
+    kernelSwitchRef.current = k;
     const t = kTime();
     handoffRef.current = { url, paused: kPaused() && !err && !mpvErr };
     if (!kIsMpv() && ref.current) {
@@ -541,11 +545,30 @@ export default function VideoPlayer(props: VideoPlayerProps) {
     clearAuto();
     if (k === 'mpv') mpvResumeRef.current = t;
     else html5ResumeRef.current = t;
-    if (persist) {
-      setKernelPref(k);
-      savePlayerPrefs({ kernel: k });
+    // MPV fullscreen is a native BrowserWindow state, while HTML5 fullscreen
+    // belongs to the document.  Do not carry one mechanism into the other:
+    // leave the current fullscreen mode first, then switch the kernel.  This
+    // also guarantees the native player bounds are restored before HTML5 takes
+    // over the same window.
+    const finish = () => {
+      if (kernelSwitchRef.current !== k) return;
+      kernelSwitchRef.current = null;
+      setFull(false);
+      setKernel(k);
+      // Update the preference only after the fullscreen transition has
+      // completed; otherwise the kernel effect can race bounds restoration.
+      if (persist) {
+        setKernelPref(k);
+        savePlayerPrefs({ kernel: k });
+      }
+    };
+    if (kernelRef.current === 'mpv') {
+      void client.playerSetFullscreen(false).then(finish).catch(finish);
+    } else if (document.fullscreenElement) {
+      void document.exitFullscreen().then(finish).catch(finish);
+    } else {
+      finish();
     }
-    setKernel(k);
   };
 
   /** mpv 可用性镜像（供 effect 内闭包读最新值） */
@@ -667,7 +690,6 @@ export default function VideoPlayer(props: VideoPlayerProps) {
   const volFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const volTrackRef = useRef<HTMLDivElement>(null);
   const [volHover, setVolHover] = useState(false);
-  const volOpen = volHover || volFlash || volDrag;
 
   // ---- 自动下一集（播完 → 5 秒倒计时可取消；默认开启）----
   const [nextCount, setNextCount] = useState<number | null>(null);
@@ -745,6 +767,7 @@ export default function VideoPlayer(props: VideoPlayerProps) {
   const [dmCfg, setDmCfg] = useState<DanmakuSettings>({ ...DEFAULT_DANMAKU_SETTINGS });
   const [dmItems, setDmItems] = useState<DanmakuItem[]>([]);
   const [dmPanel, setDmPanel] = useState(false);
+  const volOpen = (volHover || volFlash || volDrag) && !subPanel && !dmPanel;
   const [dmCands, setDmCands] = useState<DanmakuCandidate[]>([]);
   const [dmSearching, setDmSearching] = useState(false);
   const [dmMsg, setDmMsg] = useState('');
@@ -1181,6 +1204,10 @@ export default function VideoPlayer(props: VideoPlayerProps) {
 
   // 键盘 ↑/↓ 调节音量时，短暂展开音量面板（1s 后自动淡出）
   const flashVol = useCallback(() => {
+    subHover.cancel();
+    dmHover.cancel();
+    setSubPanel(false);
+    setDmPanel(false);
     setVolFlash(true);
     if (volFlashTimer.current) clearTimeout(volFlashTimer.current);
     volFlashTimer.current = setTimeout(() => setVolFlash(false), 1000);
@@ -1885,6 +1912,12 @@ export default function VideoPlayer(props: VideoPlayerProps) {
 
   // ★ 2026-09-28（用户要求）：字幕/弹幕图标手势 —— 左键单击=开关，右键或长按=打开调整框（三者互斥）
   const openPanel = (which: 'sub' | 'dm' | 'fit') => {
+    subHover.cancel();
+    dmHover.cancel();
+    volumeHover.cancel();
+    setVolHover(false);
+    setVolFlash(false);
+    if (volFlashTimer.current) clearTimeout(volFlashTimer.current);
     setSubPanel(which === 'sub');
     setDmPanel(which === 'dm');
     setFitPanel(which === 'fit');
@@ -1893,7 +1926,19 @@ export default function VideoPlayer(props: VideoPlayerProps) {
   };
   const subHover = useHoverDelay(open => open ? openPanel('sub') : setSubPanel(false));
   const dmHover = useHoverDelay(open => open ? openPanel('dm') : setDmPanel(false));
-  const volumeHover = useHoverDelay(setVolHover);
+  const volumeHover = useHoverDelay(open => {
+    if (open) {
+      subHover.cancel();
+      dmHover.cancel();
+      setSubPanel(false);
+      setDmPanel(false);
+      setFitPanel(false);
+      setSkipPanel(false);
+    }
+    setVolHover(open);
+  });
+  const subPanelHost = usePlayerPanelPosition(subPanel, wrapRef);
+  const dmPanelHost = usePlayerPanelPosition(dmPanel, wrapRef);
   const fullBusyRef = useRef(false);
 
   // 进入小窗口模式时退出元素全屏（mini 下全屏功能消失）
@@ -2326,7 +2371,7 @@ export default function VideoPlayer(props: VideoPlayerProps) {
             onPointerLeave={() => volumeHover.leave()}
           >
             {/* 悬浮面板：竖向条状音量控制（绝对定位，不影响控制条布局）；悬停/拖拽/键盘闪烁时打开 */}
-            <div className={`vp-vpanel${volOpen ? ' open' : ''}`}>
+            <div className={`vp-vpanel${volOpen ? ' open' : ''}`} style={{ visibility: subPanel || dmPanel ? 'hidden' : undefined }}>
               <div className="vp-vpct">{Math.round(vol * 100)}%</div>
               <div
                 ref={volTrackRef}
@@ -2383,12 +2428,11 @@ export default function VideoPlayer(props: VideoPlayerProps) {
               </svg>
             </button>
           </div>
+          <div className="vp-popup-anchor" onPointerEnter={() => subHover.enter()} onPointerLeave={() => subHover.leave()}>
           <button
             className="vp-ctl"
             title={`字幕：${subEnabled ? '开' : '关'}（点击开关 · 悬停调整）`}
             onClick={toggleSub}
-            onPointerEnter={() => { dmHover.cancel(); subHover.enter(); }}
-            onPointerLeave={() => subHover.leave()}
           >
             <svg width="15" height="15" viewBox="0 0 24 24">
               <rect x="2.5" y="5" width="19" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -2398,7 +2442,7 @@ export default function VideoPlayer(props: VideoPlayerProps) {
             {subEnabled && <span className="vp-subdot" />}
           </button>
           {subPanel && (
-            <div className="vp-panelhost" onPointerEnter={() => subHover.enter(true)} onPointerLeave={() => subHover.leave()}>
+            <div ref={subPanelHost} className="vp-panelhost" onPointerEnter={() => subHover.enter(true)} onPointerLeave={() => subHover.leave()}>
             <div className="vp-subpanel" onClick={(e) => e.stopPropagation()}>
               <div className="vsp-row">
                 <button className={`tag ${subEnabled ? 'active' : ''}`} onClick={toggleSub}>字幕：{subEnabled ? '开' : '关'}</button>
@@ -2468,12 +2512,12 @@ export default function VideoPlayer(props: VideoPlayerProps) {
             </div>
             </div>
           )}
+          </div>
+          <div className="vp-popup-anchor" onPointerEnter={() => dmHover.enter()} onPointerLeave={() => dmHover.leave()}>
           <button
             className="vp-ctl"
             title={`弹幕：${dmEnabled ? '开' : '关'}（点击开关 · 悬停调整）`}
             onClick={toggleDanmaku}
-            onPointerEnter={() => { subHover.cancel(); dmHover.enter(); }}
-            onPointerLeave={() => dmHover.leave()}
           >
             <svg width="15" height="15" viewBox="0 0 24 24">
               <path d="M3.5 8a2 2 0 012-2h13a2 2 0 012 2v8a2 2 0 01-2 2h-13a2 2 0 01-2-2z" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -2482,7 +2526,7 @@ export default function VideoPlayer(props: VideoPlayerProps) {
             {dmEnabled && <span className="vp-subdot" />}
           </button>
           {dmPanel && (
-            <div className="vp-panelhost" onPointerEnter={() => dmHover.enter(true)} onPointerLeave={() => dmHover.leave()}>
+            <div ref={dmPanelHost} className="vp-panelhost" onPointerEnter={() => dmHover.enter(true)} onPointerLeave={() => dmHover.leave()}>
             <div className="vp-subpanel vp-dmpanel" onClick={(e) => e.stopPropagation()}>
               <div className="vsp-row">
                 <button className={`tag ${dmEnabled ? 'active' : ''}`} onClick={toggleDanmaku}>弹幕：{dmEnabled ? '开' : '关'}</button>
@@ -2655,6 +2699,7 @@ export default function VideoPlayer(props: VideoPlayerProps) {
             </div>
             </div>
           )}
+          </div>
           {/* ★ 2026-10-08（用户要求）：跳过片头片尾 —— 左键开设置面板；本集有设置时显示绿点 */}
           {skipUsable && (
             <>

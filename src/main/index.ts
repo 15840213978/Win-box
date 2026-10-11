@@ -23,7 +23,7 @@ import { DavStore } from './store/DavStore';
 import { JsonStore } from './store/JsonStore';
 import { LocalPkgStore } from './store/LocalPkgStore';
 import { LOCAL_PROXY_BASE } from '../shared/constants';
-import { userDataDir } from './util/paths';
+import { localImportsDir, userDataDir } from './util/paths';
 import { safeStorageDriveCodec } from './util/driveCodec';
 
 // esbuild 打成 CJS：__dirname 由 Node 提供（= dist/）。资源在 dist/../../resources。
@@ -54,9 +54,9 @@ const dlna = new DlnaService(fileLogger);
 const updater = new UpdateService(fileLogger);
 /**
  * ★ 2026-09-29（用户要求）本地包（影视壳/影视仓 目录包）：登记表 + `/pkg` 资源路由 + py 就地运行。
- *   包根**就地引用**（不复制进 userData）：包是用户自己维护的，改 py/js/html 立即生效。
+ *   导入安装目录下的 imports 副本，原始包可移动/删除，不影响已导入订阅。
  */
-const localPkgs = new LocalPkgStore(new JsonStore(join(userDataDir(), 'local-pkgs.json')), LOCAL_PROXY_BASE);
+const localPkgs = new LocalPkgStore(new JsonStore(join(userDataDir(), 'local-pkgs.json')), LOCAL_PROXY_BASE, localImportsDir());
 const proxy = new LocalProxyServer(
   fileLogger,
   () => host.driveList(),
@@ -72,6 +72,7 @@ const proxy = new LocalProxyServer(
 // ★ 2026-09-29（用户要求）本地包：包内资源路由（/pkg/<i>/<rel>）+ 订阅 pkg:// 读取
 proxy.pkgRoot = (i) => localPkgs.rootOf(i);
 host.localPkgs = localPkgs;
+host.initializeLocalImports();
 // ★ 把 /play 中继的真实转发字节速率推给渲染层（播放器「缓存中」实时网速）
 const pushSpeed = (kbs: number): void => {
   for (const w of BrowserWindow.getAllWindows()) {

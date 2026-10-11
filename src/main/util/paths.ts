@@ -1,11 +1,19 @@
 // src/main/util/paths.ts
 import { app } from 'electron';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { resourceRootCandidates, pickResourceRoot, type ResolveCtx } from './resolveResources';
 
 export function userDataDir(): string {
   return app.getPath('userData');
+}
+
+/** Local imports are owned copies, never files in the user's selected folder. */
+export function localImportsDir(): string {
+  const installDir = app.isPackaged
+    ? process.env.PORTABLE_EXECUTABLE_DIR || dirname(app.getPath('exe'))
+    : app.getAppPath();
+  return join(installDir, 'imports');
 }
 
 /**

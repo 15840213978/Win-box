@@ -29,6 +29,9 @@ export interface LocalPkgEntry {
   name: string;
   /** 登记时间（ISO） */
   addedAt: string;
+  /** Application-owned copy; old entries without this flag are never deleted. */
+  managed?: boolean;
+  sourceRoot?: string;
 }
 
 /** 去掉尾部斜杠 / 反斜杠（`C:\pkg\` → `C:\pkg`） */
