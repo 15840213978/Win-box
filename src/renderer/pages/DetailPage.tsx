@@ -7,15 +7,13 @@ import { openSearchWindow } from '../lib/searchWin';
 import BackButton from '../components/BackButton';
 import { isDetailWindow } from '../lib/detailWin';
 import { uiMem, schedulePersist } from '../lib/uiMemory';
-import type { Episode, MetaExtra, MetaHit, VodDetail } from '../../shared/types';
+import type { Episode, VodDetail } from '../../shared/types';
 import { wrapImageUrlForRelay } from '../../shared/driveProvider';
 import { pickCover } from '../lib/coverPick';
 import { formatEpisodeLabel } from '../lib/epName';
 import { EP_PAGE_SIZE, epPageSlice } from '../lib/epPager';
 import { makeStaleGuard } from '../lib/staleGuard';
 import { detailIsEmpty } from '../../engine/config/sourceKind';
-import HScrollRow from '../components/HScrollRow';
-import HeroBackdrop from '../components/HeroBackdrop';
 import DriveBindModal from '../components/DriveBindModal';
 import { useTheme } from '../lib/theme';
 
@@ -84,7 +82,7 @@ export default function DetailPage({
   const autoAggRef = useRef(AUTO_AGG_DONE.has(memKey));
   /** ★ 2026-09-24：展示用片名 —— 详情自带优先，缺失时用列表页带入的（立播等源详情不返回 vod_name） */
   const displayName = (detail?.name || fromListName || '').trim();
-  /** meta（封面/演职员/推荐）查询用片名：去掉「 - 副标题」尾巴 */
+  /** 无可播剧集时搜索用片名：去掉「 - 副标题」尾巴 */
   const detailName = displayName.split(' - ')[0]?.trim() || '';
 
   useEffect(() => {
@@ -98,12 +96,9 @@ export default function DetailPage({
     setErr('');
     playGenRef.current.next(); // ★ 换了一部片 → 上一条解析作废（并放开 busy，避免按钮被旧请求卡住）
     setBusy(false);
-    setMetaHit(null);
     setSrcPicBad(false);
     setSrcPicRelay('');
     setRelayBad(false);
-    setMetaPicBad(false);
-    metaRetried.current = false;
     client
       .detail({ key: k, ids: [i] })
       .then((d) => {
@@ -127,102 +122,26 @@ export default function DetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, id]);
 
-  // ---- 元数据（★ 2026-09-24 第二轮定稿：封面**一律以搜索补图为准**，见 lib/coverPick.ts）----
-  //   进入详情即按片名查 TMDB（→豆瓣→360），命中即作为封面；源封面退化为「查完前的占位 / 未命中兜底」。
-  //   同一次查询还供「简介兜底 + 演职员/相关推荐」区块使用；命中结果缓存在主进程（7 天），同一片名不换图。
-  const [metaHit, setMetaHit] = useState<MetaHit | null>(null);
-  /** ★ 源封面（detail.pic / fromListPic）onError 证明是坏图 → 启用中继重试/补图兜底 */
+  // 播放详情只使用源数据；缺图/缺简介不触发外部元数据查询，也不影响选集。
+  /** 源封面加载失败时，仅重试同一张图的本地中继。 */
   const [srcPicBad, setSrcPicBad] = useState(false);
   /** ★ 源封面经本地 /img 中继重试（注入同源 Referer 破防盗链）的地址；只试一次 */
   const [srcPicRelay, setSrcPicRelay] = useState('');
-  /** ★ 中继重试也失败 → 交补图（无补图则置灰收手） */
+  /** 中继重试也失败 → 显示无封面，不查询第三方图片。 */
   const [relayBad, setRelayBad] = useState(false);
-  /** ★ 搜索图（/img 中继）加载失败 → 本次封面退回源图，但保留 metaHit（简介/演员/推荐仍可用） */
-  const [metaPicBad, setMetaPicBad] = useState(false);
-  useEffect(() => {
-    if (!detail) { setMetaHit(null); return; }
-    const name = detailName;
-    if (!name) return;
-    const y = /((?:19|20)\d{2})/.exec(`${detail.name || fromListName} ${detail.year || ''} ${detail.remarks || ''}`);
-    let alive = true;
-    client
-      .metaSearch(name, y ? y[1] : undefined)
-      .then((h) => { if (alive && h) setMetaHit(h); })
-      .catch(() => undefined);
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, fromListName]);
-
-  // ---- ★ 2026-09-24 详情页增强：TMDB 演职员 / 类型 / 相关推荐 ----
-  //   供下方「演员名单 + 相关推荐」区块使用；点击演员或推荐影片 → 回首页对关键词跑一次全源搜索。
-  const [extra, setExtra] = useState<MetaExtra | null>(null);
-  /** metaHit 的镜像（副作用里判断「当前命中是否带 tmdbId」用，不依赖闭包旧值） */
-  const metaHitRef = useRef<MetaHit | null>(null);
-  useEffect(() => { metaHitRef.current = metaHit; }, [metaHit]);
-  /** 本页已补查过一次带 id 的命中（防止反复请求） */
-  const metaUpgraded = useRef(false);
-  useEffect(() => {
-    if (!detail) { setExtra(null); return; }
-    const name = detailName;
-    if (!name) return;
-    const y = /((?:19|20)\d{2})/.exec(`${detail.name || fromListName} ${detail.year || ''} ${detail.remarks || ''}`);
-    let alive = true;
-    client
-      .metaExtra(name, y ? y[1] : undefined)
-      .then((x) => {
-        if (!alive) return;
-        setExtra(x);
-        // ★ 2026-09-26：老缓存命中可能**没有 tmdbId**（当年 TMDB 不可达时落盘的是豆瓣/360 结果），
-        //   而 netflix 详情页背景 = TMDB 剧照（`meta:images` 必须先有 tmdbId）。
-        //   metaExtra 内部已 forceFresh 重查并把带 id 的结果写回缓存 → 这里补一次 metaSearch
-        //   让 metaHit 一起升级；每次进页面最多补一次，失败静默（下次进来缓存已带 id）。
-        if (x && !metaUpgraded.current && !metaHitRef.current?.tmdbId) {
-          metaUpgraded.current = true;
-          client
-            .metaSearch(name, y ? y[1] : undefined)
-            .then((h) => { if (alive && h?.tmdbId) setMetaHit(h); })
-            .catch(() => undefined);
-        }
-      })
-      .catch(() => undefined);
-    return () => { alive = false; metaUpgraded.current = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, fromListName]);
-
-  // ★ 封面加载失败兜底（源封面优先策略下的三段式）：
-  //   · 失败的是补图（/img 中继 4xx/超时）→ 移除 metaHit，落回源图；
-  //   · 失败的是源封面的中继重试 → 标记 relayBad（有补图就交补图）；
-  //   · 失败的是源封面本体 → 标记 srcPicBad + 走中继重试一次 + 若无补图则重查一次。
-  const metaRetried = useRef(false);
   const coverErr = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const el = e.target as HTMLImageElement;
     const src = el.currentSrc || el.src || '';
-    // 源图中继（/img?u=…&ref=…）失败 → 标记 relayBad：有搜索图交搜索图，否则 pickCover 返回空串
-    //   → 渲染「暂无封面」占位（不再写 el.style.opacity —— 内联透明度会在换新图后残留成灰蒙层）
-    if (/[?&]ref=/.test(src)) {
-      setRelayBad(true);
-      return;
-    }
+    // 源图已在本地中继中则不再递归包装。
     if (/\/img\?/.test(src)) {
-      // 搜索图（/img 中继）失败 → 本次封面退回源图；**保留 metaHit**（简介/演员/推荐区块不受影响）
-      setMetaPicBad(true);
+      setSrcPicBad(true);
+      setRelayBad(true);
       return;
     }
     setSrcPicBad(true);
     // ★ 源封面失败 → 先经本地 /img 中继重试一次（DoH + Referer 链，破防盗链与 DNS 污染）
     const relay = wrapImageUrlForRelay(src, navigator.userAgent);
     if (relay) setSrcPicRelay((prev) => prev || relay);
-    // ★ 源封面坏了而 TMDB 尚未命中 → 主动再查一次（幂等，仅一次）
-    if (!metaHit && !metaRetried.current) {
-      metaRetried.current = true;
-      const name = detailName;
-      if (name) {
-        const y = /((?:19|20)\d{2})/.exec(`${detail?.name || fromListName} ${detail?.year || ''} ${detail?.remarks || ''}`);
-        client.metaSearch(name, y ? y[1] : undefined)
-          .then((h) => { if (h) setMetaHit(h); })
-          .catch(() => undefined);
-      }
-    }
   };
 
   // 滚动位置记忆
@@ -327,33 +246,19 @@ export default function DetailPage({
     }
   }
 
-  /** 源封面（详情自带 → 列表带入）与最终封面：**搜索图为准**，源图占位/兜底（见 lib/coverPick.ts） */
+  /** 源封面优先；详情未给图时使用列表传入的图。 */
   const srcCover = detail?.pic || fromListPic || '';
-  const cover = pickCover({ srcPic: srcCover, srcBad: srcPicBad, relay: srcPicRelay, relayBad, meta: metaPicBad ? '' : metaHit?.poster });
-  /** 演员名单：TMDB 演职员优先；TMDB miss 时用详情自带的演员串拆分兜底 */
-  const castList: Array<{ name: string; character?: string }> = extra?.cast?.length
-    ? extra.cast
-    : (detail?.actor || '')
-        .split(/[,，/、;；|]+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        .slice(0, 24)
-        .map((name) => ({ name }));
-  const genres = extra?.genres || [];
-  const recs = extra?.recommendations || [];
-  /** ★ 2026-09-24：导演/主演展示文本 —— 源数据优先，缺失时用 TMDb 演职员补齐 */
-  const directorText = (detail?.director || '').trim() || (extra?.directors || []).join(' / ');
-  const actorText = (detail?.actor || '').trim() || (extra?.cast || []).slice(0, 8).map((c) => c.name).join(' / ');
-  /**
-   * ★ 2026-09-24（用户定稿）：简介**一律优先第三方**（TMDB/豆瓣，随来源策略），
-   *   第三方没拿到（或过短）才回落「源自带简介」——封面同一逻辑（见 lib/coverPick.ts）。
-   */
-  const introText = ((): string => {
-    const third = (metaHit?.overview || '').trim();
-    if (third.length >= 8) return third;
-    return (detail?.des || '').trim();
-  })();
-  /** 点击演员 / 推荐影片 → 走 /search 路由对该关键词执行一次全源搜索（HomePage 的 ?agg= 入口） */
+  const cover = pickCover({ srcPic: srcCover, srcBad: srcPicBad, relay: srcPicRelay, relayBad });
+  const castList: Array<{ name: string }> = (detail?.actor || '')
+    .split(/[,，/、;；|]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .slice(0, 24)
+    .map((name) => ({ name }));
+  const directorText = (detail?.director || '').trim();
+  const actorText = (detail?.actor || '').trim();
+  const introText = (detail?.des || '').trim();
+  /** 点击源提供的演员 → 对该关键词执行一次全源搜索。 */
   const goSearch = (kw: string): void => { void openSearchWindow(kw).catch((e) => setErr(String(e))); };
 
   /**
@@ -373,24 +278,6 @@ export default function DetailPage({
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, detail, detailName]);
-
-  /**
-   * ★ 2026-09-24（用户定稿）：Netflix 详情页背景 = **和首页一样的横版剧照轮播**（TMDB backdrops 长图）。
-   * ★ 2026-09-25：**背景只允许横版图**（用户报「竖版图被裁剪」）——backdrops 取不到时用
-   *   `metaHit.backdrop`（TMDB `backdrop_path`，同为横版剧照）；**绝不再退回竖版封面**。
-   * ★ 2026-09-29：Apple 皮肤同样用剧照做头部背景（Apple TV 影片页观感），版式由 apple.css 接管。
-   */
-  const [nfBgs, setNfBgs] = useState<string[]>([]);
-  useEffect(() => {
-    if (!(nf || ap) || !metaHit?.tmdbId) { setNfBgs([]); return; }
-    let alive = true;
-    client
-      .metaImages(metaHit.type, metaHit.tmdbId)
-      .then((imgs) => { if (alive) setNfBgs((imgs?.backdrops || []).slice(0, 4)); })
-      .catch(() => undefined);
-    return () => { alive = false; };
-  }, [nf, ap, metaHit?.tmdbId, metaHit?.type]);
-  const backdropUrls = nfBgs.length ? nfBgs : metaHit?.backdrop ? [metaHit.backdrop] : [];
 
   return (
     <>
@@ -413,12 +300,6 @@ export default function DetailPage({
         </div>
       )}
       <div className={`content${nf ? ' nf-detail-wrap' : ap ? ' ap-detail-wrap' : db ? ' db-detail' : ''}`} ref={contentRef}>
-        {/* Netflix / Apple 皮肤：**横版剧照轮播**当全宽背景（同首页 Hero，交叉淡入淡出），内容压在上面 */}
-        {(nf || ap) && backdropUrls.length > 0 && (
-          <div className={nf ? 'nf-detail-backdrop' : 'ap-detail-backdrop'}>
-            <HeroBackdrop urls={backdropUrls} />
-          </div>
-        )}
         {loading ? (
           <div className="empty"><span className="spinner" aria-hidden="true" />加载中…</div>
         ) : err ? (
@@ -429,7 +310,7 @@ export default function DetailPage({
           <>
             {/* ★ 2026-10-08（豆风）：头图区 —— 大海报卡 + 信息区（豆瓣影片页布局；不再是「小图 + 右列文字」） */}
             <div className={db ? 'db-hero' : 'row'} style={db ? undefined : { alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
-              {/** 封面（★ 搜索补图为准）：搜索命中图 > 源图（占位/兜底）；源图坏 → 中继重试 */}
+              {/** 源图直接使用，坏图仅做同图中继重试。 */}
               {cover ? (
                 <img
                   src={cover}
@@ -449,7 +330,6 @@ export default function DetailPage({
               <div style={{ flex: 1, minWidth: 0 }} className={db ? 'db-hero-info' : undefined}>
                 <h2 className={db ? 'db-hero-title' : undefined} style={db ? undefined : { margin: '0 0 8px' }}>{displayName}</h2>
                 <div className="muted" style={{ marginBottom: 4 }}>{detail.type} · {detail.year} · {detail.area}</div>
-                {/* ★ 2026-09-24：源数据缺导演/演员时，用 TMDb 演职员补齐（不再标注「来自 TMDb」—— 属冗余说明） */}
                 {directorText && <div className="muted" style={{ marginBottom: 4 }}>导演：{directorText}</div>}
                 {actorText && <div className="muted" style={{ marginBottom: 4 }}>主演：{actorText}</div>}
                 {detail.remarks && (db
@@ -508,15 +388,6 @@ export default function DetailPage({
                 </button>
               </div>
             )}
-            {/* ★ 2026-09-24 详情页增强：类型 / 演员名单 / 相关推荐（TMDB；点击 → 全源搜索） */}
-            {genres.length > 0 && (
-              <div className="row" style={{ marginTop: 16 }}>
-                <span className="muted">类型：</span>
-                {genres.map((g) => (
-                  <span key={g} className="tag" style={{ cursor: 'default' }}>{g}</span>
-                ))}
-              </div>
-            )}
             {castList.length > 0 && (
               <div style={{ marginTop: 16 }}>
                 <div className="muted" style={{ marginBottom: 6 }}>演员（点击搜索 TA 的作品）</div>
@@ -525,38 +396,13 @@ export default function DetailPage({
                     <span
                       key={c.name}
                       className="tag"
-                      title={c.character ? `饰 ${c.character} · 点击全源搜索` : '点击全源搜索'}
+                      title="点击全源搜索"
                       onClick={() => goSearch(c.name)}
                     >
-                      {c.name}{c.character ? ` · ${c.character}` : ''}
+                      {c.name}
                     </span>
                   ))}
                 </div>
-              </div>
-            )}
-            {recs.length > 0 && (
-              <div style={{ marginTop: 18 }}>
-                <div className="muted" style={{ marginBottom: 8 }}>相关推荐（点击全源搜索该影片）</div>
-                {/* ★ 2026-09-24：改用 .rec-row —— 封面尺寸**强约束统一**（此前个别图会被撑大）；
-                    滚轮在行内 → 横向滚动（HScrollRow） */}
-                <HScrollRow className="rec-row">
-                  {recs.map((r, i) => (
-                    <div
-                      key={`${r.title}-${i}`}
-                      className="card-media"
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => goSearch(r.title)}
-                      title={`${r.title}${r.year ? ` (${r.year})` : ''}`}
-                    >
-                      <div className="card">
-                        <img src={r.poster} loading="lazy" decoding="async" alt="" />
-                        <div className="meta">
-                          <div className="name" title={r.title}>{r.title}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </HScrollRow>
               </div>
             )}
           </>

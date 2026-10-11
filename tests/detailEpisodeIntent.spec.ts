@@ -18,6 +18,26 @@ const findFunction = (name: string): ts.FunctionDeclaration => {
 };
 
 describe('detail episode playback intent', () => {
+  it('详情和播放窗口不自动查询外部元数据，展示源封面和简介', () => {
+    const player = readFileSync(new URL('../src/renderer/pages/PlayerPage.tsx', import.meta.url), 'utf8');
+    for (const content of [source, player]) {
+      const parsed = ts.createSourceFile('page.tsx', content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      const calls: string[] = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.expression.getText(parsed) === 'client') calls.push(node.expression.name.text);
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+      expect(calls).not.toContain('metaSearch');
+      expect(calls).not.toContain('metaExtra');
+      expect(calls).not.toContain('metaImages');
+      expect(calls).toContain('play');
+    }
+    expect(source).toContain("const srcCover = detail?.pic || fromListPic || ''");
+    expect(source).toContain("const introText = (detail?.des || '').trim()");
+  });
+
   it('single-click updates selection without switching or opening a player', () => {
     const choose = findFunction('chooseEp').getText(file);
     expect(choose).toContain('setEp(i)');

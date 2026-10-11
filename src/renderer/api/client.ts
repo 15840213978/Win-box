@@ -218,6 +218,7 @@ declare global {
         isMini: () => Promise<IpcResult<{ mini: boolean }>>;
         setFullscreen: (fullscreen: boolean) => Promise<IpcResult<{ fullscreen: boolean }>>;
         isFullscreen: () => Promise<IpcResult<{ fullscreen: boolean }>>;
+        setResizable: (resizable: boolean) => Promise<IpcResult<{ resizable: boolean }>>;
         onInit: (cb: (init: unknown) => void) => () => void;
         onSwitchEp: (cb: (epIndex: number) => void) => () => void;
         onMini: (cb: (mini: boolean) => void) => () => void;
