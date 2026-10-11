@@ -318,7 +318,7 @@ export interface MetaExtra {
   directors: string[];
 }
 
-// ---------- 发现页（无源时的默认主页；数据来自 TMDB 榜单） ----------
+// ---------- 发现页（国内榜单；与播放源解耦） ----------
 export interface DiscoverItem {
   title: string;
   year: number | '';
@@ -327,7 +327,21 @@ export interface DiscoverItem {
   /** ★ 2026-09-25：横版剧照（TMDB `backdrop_path`，w1280，已 /img 中继）—— Hero 背景只用横版图 */
   backdrop?: string;
   tmdbId?: number;
+  doubanId?: string;
   mediaType: 'movie' | 'tv';
+}
+
+export interface MovieHotItem {
+  title: string;
+  rank: number;
+  score: string;
+}
+
+export interface MovieHotList {
+  source: 'baidu';
+  items: MovieHotItem[];
+  fetchedAt: number;
+  stale: boolean;
 }
 
 export interface DiscoverSection {

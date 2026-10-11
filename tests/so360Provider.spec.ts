@@ -1,6 +1,6 @@
 // tests/so360Provider.spec.ts — 360 图片兜底（TMDB/豆瓣都查不到的中文短剧封面）纯函数回归
 import { describe, it, expect } from 'vitest';
-import { parseSo360, isRelevantHit, seasonNo, pickBestSo360Cover, isPortraitCover, SO360_CACHE_PREFIX, SO360_REFERER } from '../src/main/meta/so360Provider';
+import { parseSo360, isRelevantHit, seasonNo, pickBestSo360Cover, isPortraitCover, SO360_CACHE_PREFIX, SO360_REFERER, pickSo360Backdrops } from '../src/main/meta/so360Provider';
 
 describe('parseSo360', () => {
   it('取 img/thumb 与 title（img 优先）+ 宽高', () => {
@@ -93,5 +93,23 @@ describe('isRelevantHit（宁缺勿错图）', () => {
     expect(isRelevantHit('侠探杰克第四季', '侠探杰克 剧照合集')).toBe(false); // 结果无季号 = 基础剧集文章
     expect(isRelevantHit('侠探杰克第四季', '侠探杰克第四季 剧照')).toBe(true);
     expect(isRelevantHit('狂飙', '《狂飙》剧照')).toBe(true); // 查询无季号 → 仍按共同子串规则（不受本条影响）
+  });
+});
+
+describe('首页横图搜索独立于海报选图', () => {
+  const c = (title: string, w = 1920, h = 1080) => ({ title, w, h, img: `https://images.test/${encodeURIComponent(title)}.jpg` });
+  it('拒绝竖海报、缩略图、错误影片和年份冲突', () => {
+    const result = pickSo360Backdrops([
+      c('流浪地球 2019 剧照'), c('流浪地球 2023 横版'), c('流浪地球 海报', 900, 1350),
+      c('流浪地球 缩略图', 400, 200), c('狂飙 剧照'),
+    ], '流浪地球', '2019');
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('流浪地球 2019 剧照');
+  });
+  it('季号必须一致，剧照优先于网盘下载文章图，重复 URL 去重', () => {
+    const good = c('庆余年第二季 横版剧照');
+    const result = pickSo360Backdrops([c('庆余年第一季 剧照'), c('庆余年第二季 百度云下载'), good, good], '庆余年第二季');
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(good);
   });
 });

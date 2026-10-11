@@ -210,6 +210,9 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
   // ★ 2026-09-24：详情页增强（演职员/类型/相关推荐）与发现页榜单（无源默认主页）
   registerHandler(IPC.META_EXTRA, (_e: any, name: string, year?: string) => host.metaExtra(String(name || ''), year ? String(year) : undefined), log);
   registerHandler(IPC.META_DISCOVER, (_e: any, refresh?: boolean) => host.metaDiscover(!!refresh), log);
+  registerHandler(IPC.META_MOVIE_HOT, () => host.metaMovieHot(), log);
+  registerHandler(IPC.META_DISCOVER_IMAGES, (_e: any, name: string, mediaType: string, year?: string, kind?: string) =>
+    host.metaDiscoverImages(String(name || ''), mediaType === 'tv' ? 'tv' : 'movie', /^\d{4}$/.test(String(year)) ? String(year) : undefined, kind === 'poster' ? 'poster' : 'backdrop'), log);
   // ★ 2026-09-24：发现页「分类」（TMDB 类型清单 + 按类型翻页）
   registerHandler(IPC.META_GENRES, () => host.metaGenres(), log);
   registerHandler(IPC.META_GENRE_PAGE, (_e: any, mediaType: string, genreId: number, page: number) => host.metaGenrePage(String(mediaType || 'movie'), Number(genreId) || 0, Number(page) || 1), log);

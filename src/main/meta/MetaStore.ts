@@ -2,7 +2,7 @@
 // 物理文件：<userData>/meta.json。键：
 //   cache — 查询缓存：`<名称规范>|year` → { t: 写入时间戳, hit: MetaHit | null }
 //           hit=null 表示「查询无结果」，同样缓存（防翻页反复打 TMDB），TTL 较命中短。
-// ★ 凭据（v3 key / v4 token）为内置密文（credentials.ts），不在本文件存储、不向用户展示。
+// 用户凭据由 MetaSettingsStore 加密存储，不在本缓存文件存储。
 import type { JsonStore } from '../store/JsonStore';
 import type { MetaHit } from '../../shared/types';
 

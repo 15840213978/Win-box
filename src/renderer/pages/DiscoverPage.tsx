@@ -1,7 +1,7 @@
 // src/renderer/pages/DiscoverPage.tsx — 发现页（★ 2026-09-24 起为**默认首页**，侧边栏第一个）
 // 内容：
-//   ① 推荐（TMDB 榜单五分区：热门/即将上映/高分 电影 + 热门/高分 剧集；主进程 6h 缓存）
-//   ② 分类（TMDB 类型清单 + 按类型翻页 /discover?with_genres=…，popularity 排序）
+//   ① 推荐（豆瓣电影/剧集五分区；主进程持久缓存，过期后台更新）
+//   ② 分类（国内标签推荐分页，与 TMDB 类型 ID 解耦）
 // 交互：点任意影片 → 走 `#/search?agg=<片名>` 用「源」做一次全源搜索（没源时提示去导入）。
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -17,8 +17,37 @@ import type { DiscoverItem, DiscoverSection, DiscoverGenre } from '../../shared/
    *  其余皮肤零痕迹（不依赖别处补 `display:none`）。
    *  dbPlay/dbYear ★ 2026-10-08（豆风）：海报墙卡 —— 悬停浮出圆形播放钮 + 左下角年份角标（豆瓣海报墙观感）。 */
 function ItemCard({ it, onOpen, onHover, playBadge, dbPlay, dbYear }: { it: DiscoverItem; onOpen: () => void; onHover?: () => void; playBadge?: boolean; dbPlay?: boolean; dbYear?: boolean }) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [poster, setPoster] = useState(it.poster);
+  const [broken, setBroken] = useState(!it.poster);
+  const [searched, setSearched] = useState(false);
+  const [nearViewport, setNearViewport] = useState(false);
+  useEffect(() => { setPoster(it.poster); setBroken(!it.poster); setSearched(false); }, [it.poster, it.title, it.year]);
+  useEffect(() => {
+    const node = cardRef.current;
+    if (!node || !broken || searched) return;
+    if (!('IntersectionObserver' in window)) { setNearViewport(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setNearViewport(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '500px 300px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [broken, searched, it.title]);
+  useEffect(() => {
+    if (!broken || searched || !nearViewport) return;
+    let alive = true;
+    void client.metaDiscoverImages(it.title, it.mediaType, it.year ? String(it.year) : undefined, 'poster')
+      .then(images => { if (alive && images.posters[0]) { setPoster(images.posters[0]); setBroken(false); } })
+      .catch(() => undefined)
+      .finally(() => { if (alive) setSearched(true); });
+    return () => { alive = false; };
+  }, [broken, searched, nearViewport, it.title, it.mediaType, it.year]);
   return (
     <div
+      ref={cardRef}
       className="card-media"
       style={{ cursor: 'pointer' }}
       role="button"
@@ -36,7 +65,7 @@ function ItemCard({ it, onOpen, onHover, playBadge, dbPlay, dbYear }: { it: Disc
     >
       <div className="card">
         <div style={{ position: 'relative' }}>
-          {it.poster ? <img src={it.poster} loading="lazy" decoding="async" /> : <div className="no-cover">暂无封面</div>}
+          {poster && !broken ? <img src={poster} loading="lazy" decoding="async" onError={() => setBroken(true)} /> : <div className="no-cover">{searched ? '暂无封面' : '正在补全封面…'}</div>}
           {playBadge && (
             <span className="ap-card-play" aria-hidden="true">
               <svg width="13" height="13" viewBox="0 0 16 16"><path d="M4.9 2.9v10.2l8-5.1-8-5.1Z" fill="currentColor" /></svg>
@@ -83,6 +112,8 @@ export default function DiscoverPage() {
   const [gItems, setGItems] = useState<DiscoverItem[]>([]);
   const [gTotal, setGTotal] = useState(1);
   const [gLoading, setGLoading] = useState(false);
+  const genreRequest = useRef(0);
+  const [genreError, setGenreError] = useState('');
   /** ★ 2026-10-08（豆风）：海报墙当前分区（顶部 pill 切换 —— 替代「一行行横滑」的堆叠布局） */
   const [wallSec, setWallSec] = useState(0);
 
@@ -103,8 +134,9 @@ export default function DiscoverPage() {
     client
       .metaDiscover(false)
       .then((s) => {
-        setSections(s);
-        if (s.length === 0) setErr('发现页暂无数据（内置 TMDb 凭据不可用或网络不可达）');
+        if (s.length) setSections(s);
+        else setSections(previous => previous?.length ? previous : s);
+        if (s.length === 0) setErr('榜单暂时获取失败，请稍后重试；如已配置 TMDB，请检查自己的凭据和网络');
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoading(false));
@@ -127,24 +159,29 @@ export default function DiscoverPage() {
   /** 选类型 → 取该类型第 page 页 */
   const loadGenre = (g: DiscoverGenre, page: number, mediaType: 'movie' | 'tv' | null = media): void => {
     if (!mediaType) return;
+    const requestId = ++genreRequest.current;
     setGSel(g);
     setGPage(page);
     setGLoading(true);
+    setGenreError('');
+    setGItems([]);
     client
       .metaGenrePage(mediaType, g.id, page)
-      .then((r) => { setGItems(r.items); setGTotal(r.totalPages); })
-      .catch(() => { setGItems([]); setGTotal(1); })
-      .finally(() => setGLoading(false));
+      .then((r) => { if (requestId === genreRequest.current) { setGItems(r.items); setGTotal(r.totalPages); if (!r.items.length) setGenreError('该分类暂时无法获取，请稍后重试'); } })
+      .catch(() => { if (requestId === genreRequest.current) { setGenreError('分类请求失败，请稍后重试'); setGTotal(1); } })
+      .finally(() => { if (requestId === genreRequest.current) setGLoading(false); });
   };
   /** 点击父分类：切换选中；再次点击已选中的父分类 = 取消（子分类随之隐藏，回到推荐） */
   const switchMedia = (m: 'movie' | 'tv'): void => {
+    ++genreRequest.current;
+    setGLoading(false);
     const next = media === m ? null : m;
     setMedia(next);
     setGSel(null);
     setGItems([]);
     setGTotal(1);
   };
-  const backToRecommend = (): void => { setGSel(null); setGItems([]); };
+  const backToRecommend = (): void => { ++genreRequest.current; setGLoading(false); setGSel(null); setGItems([]); };
 
   const genreList = media === 'movie' ? genres.movie : media === 'tv' ? genres.tv : [];
   const hasGenres = genres.movie.length > 0 || genres.tv.length > 0;
@@ -154,6 +191,9 @@ export default function DiscoverPage() {
    *   ② 鼠标离开后**自动轮播**（8s 一部，取首行条目）。
    */
   const [heroItem, setHeroItem] = useState<DiscoverItem | null>(null);
+  const [heroArt, setHeroArt] = useState<{ item: DiscoverItem; urls: string[] } | null>(null);
+  const heroArtKey = heroArt ? `${heroArt.item.mediaType}|${heroArt.item.title}|${heroArt.item.year}` : '';
+  const artworkLoading = useRef(false);
   const hoveringRef = useRef(false);
   const firstRow = sections && sections.length > 0 ? sections[0].items : [];
   const hero = heroItem || firstRow[0] || null;
@@ -161,7 +201,7 @@ export default function DiscoverPage() {
     if (!heroSkin || firstRow.length === 0) return;
     let i = 0;
     const timer = setInterval(() => {
-      if (hoveringRef.current) return; // 鼠标停在卡片上时不抢画面
+      if (hoveringRef.current || artworkLoading.current) return; // 正在搜图时不抢先切片
       i = (i + 1) % firstRow.length;
       setHeroItem(firstRow[i]);
     }, 8000);
@@ -172,28 +212,54 @@ export default function DiscoverPage() {
   // ---- Hero 背景剧照：随主推片切换而重取（主进程 24h 缓存）----
   // ★ 2026-09-25：**背景只允许横版图**（用户报「竖版图被裁剪」）——优先 `images.backdrops`，
   //   取不到才用榜单自带的 `backdrop_path`（同样是横版剧照）；**绝不再退回竖版封面**（poster）。
-  const [heroBgs, setHeroBgs] = useState<string[]>([]);
+  // 图片与片名一起切换；搜索失败时保留上一部已加载的完整 Hero，不给旧图配新片名。
+  const artworkCache = useRef(new Map<string, string[]>());
+  const artworkRequests = useRef(new Map<string, Promise<string[]>>());
   useEffect(() => {
-    if (!heroSkin || !hero) {
-      setHeroBgs([]);
-      return;
-    }
-    const fallback = hero.backdrop ? [hero.backdrop] : [];
-    if (!hero.tmdbId) {
-      setHeroBgs(fallback);
-      return;
-    }
+    if (!heroSkin || !hero) return;
     let alive = true;
-    client
-      .metaImages(hero.mediaType, hero.tmdbId)
-      .then((imgs) => {
-        if (!alive) return;
-        const bgs = (imgs?.backdrops || []).slice(0, 4);
-        setHeroBgs(bgs.length ? bgs : fallback);
-      })
-      .catch(() => { if (alive) setHeroBgs(fallback); });
-    return () => { alive = false; };
-  }, [heroSkin, hero?.tmdbId, hero?.mediaType, hero?.backdrop, hero?.poster]);
+    const key = `${hero.mediaType}|${hero.title}|${hero.year}`;
+    const loadArtwork = async (): Promise<string[]> => {
+      const cached = artworkCache.current.get(key);
+      if (cached) return cached;
+      let job = artworkRequests.current.get(key);
+      if (!job) {
+        job = client.metaDiscoverImages(hero.title, hero.mediaType, hero.year ? String(hero.year) : undefined)
+          .then(async imgs => {
+            const urls = [...(imgs.backdrops || []), ...(hero.backdrop ? [hero.backdrop] : [])];
+            // 主进程下载 + 浏览器实际解码两道校验；坏图不切进 Hero。
+            const good: string[] = [];
+            for (const url of urls.slice(0, 4)) {
+              const loaded = await new Promise<boolean>(resolve => {
+                const image = new Image();
+                const timer = setTimeout(() => { image.onload = image.onerror = null; resolve(false); }, 8000);
+                image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth / image.naturalHeight >= 1.4); };
+                image.onerror = () => { clearTimeout(timer); resolve(false); };
+                image.src = url;
+              });
+              if (loaded) good.push(url);
+            }
+            if (good.length) artworkCache.current.set(key, good);
+            return good;
+          }).catch(() => []).finally(() => artworkRequests.current.delete(key));
+        artworkRequests.current.set(key, job);
+      }
+      return job;
+    };
+    artworkLoading.current = true;
+    // 快速掠过卡片不发搜图请求。
+    const delay = setTimeout(() => {
+    void loadArtwork().then(urls => {
+      if (!alive) return;
+      artworkLoading.current = false;
+      if (urls.length) setHeroArt({ item: hero, urls });
+      else if (heroArtKey === key) setHeroArt(null);
+    });
+    }, 250);
+    return () => { alive = false; artworkLoading.current = false; clearTimeout(delay); };
+  }, [heroSkin, hero?.title, hero?.year, hero?.mediaType, hero?.backdrop]);
+
+  const displayedHero = heroArt?.item;
 
   return (
     <>
@@ -205,21 +271,21 @@ export default function DiscoverPage() {
             ★ 2026-09-26（用户指令）：无源时的「还没有导入任何源 —— 去导入源」提示条也整条删除。 */}
         {/* ---- Hero：Netflix = 满屏横版剧照轮播（保持比例 + 比例外模糊填充）；
                Apple = Apple TV app 的「精选轮播」（圆角剧照卡 + 标题/按钮 + 页码圆点）---- */}
-        {heroSkin && hero && !gSel && (
+        {heroSkin && displayedHero && !gSel && (
           <div className={nf ? 'nf-hero' : 'ap-hero'}>
-            <HeroBackdrop urls={heroBgs} fit={nf ? 'contain' : 'cover'} />
-            <div className={nf ? 'nf-hero-body' : 'ap-hero-body'} key={`${hero.title}-${hero.year || ''}`}>
+            <HeroBackdrop urls={heroArt!.urls} fit={nf ? 'contain' : 'cover'} />
+            <div className={nf ? 'nf-hero-body' : 'ap-hero-body'} key={`${displayedHero.title}-${displayedHero.year || ''}`}>
               <div className={nf ? 'nf-hero-kicker' : 'ap-hero-kicker'}>{nf ? 'WIN-BOX 精选' : '精选推荐'}</div>
-              <h1 className={nf ? 'nf-hero-title' : 'ap-hero-title'}>{hero.title}</h1>
+              <h1 className={nf ? 'nf-hero-title' : 'ap-hero-title'}>{displayedHero.title}</h1>
               <div className={nf ? 'nf-hero-meta' : 'ap-hero-meta'}>
-                <span className={nf ? 'nf-hero-match' : 'ap-hero-match'}>98% 匹配</span>
-                {hero.year ? <span>{hero.year}</span> : null}
-                <span>{hero.mediaType === 'tv' ? '剧集' : '电影'}</span>
-                <span>{sections && sections[0] ? sections[0].title : ''}</span>
+                <span className={nf ? 'nf-hero-match' : 'ap-hero-match'}>精选推荐</span>
+                {displayedHero.year ? <span>{displayedHero.year}</span> : null}
+                <span>{displayedHero.mediaType === 'tv' ? '剧集' : '电影'}</span>
+                <span>{sections?.find(s => s.items.some(it => it.title === displayedHero.title))?.title || ''}</span>
               </div>
               <div className={nf ? 'nf-hero-actions' : 'ap-hero-actions'}>
-                <button className={nf ? 'nf-play-btn' : 'ap-play-btn'} onClick={() => goSearch(hero.title)}>▶ 播放</button>
-                <button className={nf ? undefined : 'ap-btn-2'} onClick={() => goSearch(hero.title)}>更多信息</button>
+                <button className={nf ? 'nf-play-btn' : 'ap-play-btn'} onClick={() => goSearch(displayedHero.title)}>▶ 播放</button>
+                <button className={nf ? undefined : 'ap-btn-2'} onClick={() => goSearch(displayedHero.title)}>更多信息</button>
               </div>
             </div>
             {/* Apple TV 式页码圆点（可点选切换主推片；自动轮播仍每 8s 前进） */}
@@ -229,9 +295,9 @@ export default function DiscoverPage() {
                   <button
                     type="button"
                     key={`${it.title}-${i}`}
-                    className={'ap-dot' + (hero?.title === it.title ? ' active' : '')}
+                    className={'ap-dot' + (displayedHero.title === it.title ? ' active' : '')}
                     aria-label={`切换到 ${it.title}`}
-                    aria-current={hero?.title === it.title ? 'true' : undefined}
+                    aria-current={displayedHero.title === it.title ? 'true' : undefined}
                     title={it.title}
                     onClick={() => setHeroItem(it)}
                   />
@@ -286,7 +352,7 @@ export default function DiscoverPage() {
             {gLoading && gItems.length === 0 ? (
               <div className="empty"><span className="spinner" aria-hidden="true" />加载中…</div>
             ) : gItems.length === 0 ? (
-              <div className="empty">该分类暂无数据</div>
+              <div className="empty">{genreError || '该分类暂无数据'} <button onClick={() => loadGenre(gSel, gPage)}>重试</button></div>
             ) : (
               <>
                 <div className="grid">

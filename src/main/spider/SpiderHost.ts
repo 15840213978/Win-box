@@ -120,19 +120,20 @@ import { MetaSettingsStore } from '../meta/MetaSettings';
 import {
   tmdbSearchTitle,
   tmdbExtras,
+  tmdbSuggest,
+  tmdbImages,
   tmdbDiscover,
   tmdbGenres,
   tmdbGenrePage,
-  tmdbSuggest,
-  tmdbImages,
   metaCacheKey,
   metaQueryVariants,
   setTmdbRuntime,
   hasUserTmdbKey,
 } from '../meta/tmdbProvider';
 import { doubanSearchTitle, doubanSuggest, isCjkName, DOUBAN_CACHE_PREFIX } from '../meta/doubanProvider';
-import { getTmdbCredentials } from '../meta/credentials';
 import { so360SearchCover, SO360_CACHE_PREFIX } from '../meta/so360Provider';
+import { DomesticDiscover } from '../meta/domesticDiscover';
+import { DiscoverArtwork } from '../meta/discoverArtwork';
 import { ParseService } from '../parse/ParseService';
 import { sniffMediaUrl } from '../parse/PageSniffer';
 import { getProxySettings, jvmProxyArgs, childProxyEnv } from '../net/proxy';
@@ -279,6 +280,8 @@ export class SpiderHost {
   private metaStore: MetaStore;
   /** ★ 元数据来源配置（TMDB 自填 Key / API 代理地址 / 图片镜像地址 / 来源策略） */
   private metaSettings: MetaSettingsStore;
+  private domesticDiscover: DomesticDiscover;
+  private discoverArtwork: DiscoverArtwork;
   /** ★ 夸克已落盘待清理队列（关闭播放/窗口/退出时删除，进度仍保留在本地历史；持久化防重启丢失） */
   private pendingQuarkDeletes: Array<{ cookie: string; pdirFid: string; fid: string; dirFid?: string; path?: string; at: number; provider?: 'quark' | 'uc' | 'baidu' }> = [];
   private pendingQuarkStore: JsonStore;
@@ -381,6 +384,8 @@ export class SpiderHost {
     this.subtitles = new SubtitleStore(join(userDataDir(), 'subtitle.json'), this.logger, safeStorageDriveCodec());
     this.danmakuStore = new DanmakuStore(join(userDataDir(), 'danmaku.json'), this.logger);
     this.metaStore = new MetaStore(new JsonStore(join(userDataDir(), 'meta.json')));
+    this.domesticDiscover = new DomesticDiscover(new JsonStore(join(cacheDir(), 'discovery.json')), this.logger);
+    this.discoverArtwork = new DiscoverArtwork(new JsonStore(join(cacheDir(), 'discovery-artwork.json')), cacheDir(), this.logger);
     // ★ 2026-09-24：元数据来源配置（TMDB 自填 Key/镜像地址 + 来源策略）；装配后立即把运行期配置注入 tmdbProvider
     this.metaSettings = new MetaSettingsStore(join(userDataDir(), 'meta-settings.json'), this.logger, safeStorageDriveCodec());
     this.applyMetaRuntime();
@@ -809,7 +814,7 @@ export class SpiderHost {
   //   tmdb        : 仅 TMDB（**必须用户自填 API**；未填时保存即回落 auto，见 metaSetSettings）
   //   douban      : 仅豆瓣
   //   search      : 仅 360 图搜（封面；简介回落源自带，符合用户定稿口径）
-  //   注：策略只约束封面/简介/详情增强；发现页（TMDB 榜单/分类）不受限。
+  //   元数据遵循来源策略；发现页仅在用户自填凭据后启用 TMDB。
 
   /** 生效的来源策略 */
   private get metaSource(): MetaSource {
@@ -822,10 +827,10 @@ export class SpiderHost {
     setTmdbRuntime({ userKey: s.tmdbApiKey, apiBase: s.tmdbApiBase, imageBase: s.tmdbImageBase });
   }
 
-  /** meta:getSettings —— 配置页读取（**绝不返回内置密文**，只给能力布尔） */
+  /** meta:getSettings —— 配置页读取；内置 TMDB 已停用。 */
   metaGetSettings(): MetaSettingsView {
     const s = this.metaSettings.settings;
-    return { ...s, hasBuiltin: !!getTmdbCredentials(), hasUserKey: hasUserTmdbKey() };
+    return { ...s, hasBuiltin: false, hasUserKey: !!s.tmdbApiKey.trim() };
   }
 
   /** meta:setSettings —— 保存并即时生效（无需重启）；「仅 TMDB」缺用户 Key → 自动回落 auto */
@@ -910,7 +915,7 @@ export class SpiderHost {
       if (src === 'tmdb') return await tmdbSearchTitle(this.metaStore, this.logger, n, year || undefined);
       if (src === 'douban') return await this.doubanLookup(n, year);
       if (src === 'search') return await this.so360Lookup(n);
-      // auto（默认，与历史行为一致）：TMDB →（仅中文片名才兜底）豆瓣 → 360 图搜
+       // auto：用户配置 TMDB 才查询；否则直接使用国内来源。
       const tmdb = await tmdbSearchTitle(this.metaStore, this.logger, n, year || undefined);
       if (tmdb) return tmdb;
       if (!isCjkName(n)) return null;
@@ -940,20 +945,20 @@ export class SpiderHost {
     }
   }
 
-  /** ★ 2026-09-24 发现页：TMDB 榜单（无源默认主页；无凭据返回空数组，渲染层给提示） */
+  /** 默认国内榜单；只有用户配置 TMDB 凭据后才使用 TMDB。 */
   async metaDiscover(refresh = false): Promise<DiscoverSection[]> {
     try {
-      return await tmdbDiscover(this.logger, !!refresh);
+      return hasUserTmdbKey() ? await tmdbDiscover(this.logger, !!refresh) : await this.domesticDiscover.discover(!!refresh);
     } catch (e) {
       this.logger.w(`meta:发现页查询失败: ${(e as Error).message}`);
       return [];
     }
   }
 
-  /** ★ 2026-09-24 发现页「分类」：TMDB 类型清单（电影/剧集两套，中文） */
+  /** 分类编号必须和当前发现页来源一致。 */
   async metaGenres(): Promise<{ movie: DiscoverGenre[]; tv: DiscoverGenre[] }> {
     try {
-      return await tmdbGenres(this.logger);
+      return hasUserTmdbKey() ? await tmdbGenres(this.logger) : this.domesticDiscover.genres();
     } catch (e) {
       this.logger.w(`meta:类型清单查询失败: ${(e as Error).message}`);
       return { movie: [], tv: [] };
@@ -964,7 +969,9 @@ export class SpiderHost {
   async metaGenrePage(mediaType: string, genreId: number, page: number): Promise<DiscoverGenrePage> {
     const t: 'movie' | 'tv' = String(mediaType) === 'tv' ? 'tv' : 'movie';
     try {
-      return await tmdbGenrePage(this.logger, t, Number(genreId) || 0, Number(page) || 1);
+      return hasUserTmdbKey()
+        ? await tmdbGenrePage(this.logger, t, Number(genreId) || 0, Number(page) || 1)
+        : await this.domesticDiscover.genrePage(t, Number(genreId) || 0, Number(page) || 1);
     } catch (e) {
       this.logger.w(`meta:分类查询失败: ${(e as Error).message}`);
       return { items: [], page: 1, totalPages: 1 };
@@ -977,6 +984,19 @@ export class SpiderHost {
     const run = this.deletePendingBatch();
     this.pendingDeleteRun = run.finally(() => { this.pendingDeleteRun = null; });
     return this.pendingDeleteRun;
+  }
+
+  metaMovieHot() { return this.domesticDiscover.hot(); }
+
+  async metaDiscoverImages(name: string, mediaType: 'movie' | 'tv', year?: string, kind: 'backdrop' | 'poster' = 'backdrop') {
+    if (hasUserTmdbKey()) {
+      const hit = await tmdbSearchTitle(this.metaStore, this.logger, name, year);
+      if (hit?.tmdbId) {
+        const images = await tmdbImages(this.logger, hit.type, hit.tmdbId);
+        if (kind === 'poster' ? images.posters.length : images.backdrops.length) return images;
+      }
+    }
+    return this.discoverArtwork.images(name, mediaType, year, kind);
   }
 
   private async deletePendingBatch(): Promise<void> {

@@ -626,6 +626,7 @@ tr.active-row { background: var(--accent-soft) !important; outline: 1px solid rg
 .about-link:hover { border-color: var(--accent); color: var(--accent); }
 .about-link.about-sponsor:hover { border-color: #ff7a9a; color: #ff7a9a; }
 .about-link.about-group:hover { border-color: #5aa9ff; color: #5aa9ff; }
+.sp-hot-score { flex: 0 0 auto; font-size: 11px; margin-left: auto; }
 .about-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .about-support-dialog {
   max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); padding: 14px;

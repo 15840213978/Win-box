@@ -18,7 +18,7 @@ type TabId = 'sources' | 'health' | 'profiles' | 'account' | 'storage' | 'appear
 
 /** ★ 2026-09-24：元数据来源策略选项（封面与简介共用；「仅 TMDB」需用户先填自己的 API） */
 const META_SOURCE_OPTS: Array<{ v: MetaSource; label: string; hint: string }> = [
-  { v: 'auto', label: '全走（推荐）', hint: 'TMDB → 豆瓣 → 搜索，全自动，命中率最高' },
+  { v: 'auto', label: '自动（推荐）', hint: '豆瓣 → 图片搜索；填写自己的 TMDB 凭据后优先查询 TMDB' },
   { v: 'tmdb', label: '仅 TMDB', hint: '只用 TMDB（需先填自己的 API Key；无演职员时留空即可）' },
   { v: 'douban', label: '仅豆瓣', hint: '只用豆瓣（中文片名覆盖好；详情页无演职员/推荐区块）' },
   { v: 'search', label: '仅搜索', hint: '只用图片搜索兜底封面；简介回落源自带简介' },
@@ -1431,7 +1431,7 @@ export default function ConfigPage() {
         <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
           <input
             type="password"
-            placeholder="TMDB API Key 或 v4 令牌（留空 = 用内置默认）…"
+            placeholder="TMDB API Key 或 v4 令牌（留空 = 不启用 TMDB）…"
             value={metaDraft.tmdbApiKey}
             style={{ flex: 1 }}
             onChange={(e) => { setMetaDraft({ ...metaDraft, tmdbApiKey: e.target.value }); setMetaDirty(true); }}
@@ -1451,6 +1451,9 @@ export default function ConfigPage() {
             style={{ flex: 1 }}
             onChange={(e) => { setMetaDraft({ ...metaDraft, tmdbImageBase: e.target.value }); setMetaDirty(true); }}
           />
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          发现页默认使用国内榜单，电影热搜来自百度。保存自己的 TMDB 凭据后，发现页与分类改用 TMDB；清空凭据恢复国内榜单。
         </div>
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
           <span className="muted" style={{ fontSize: 11 }}>来源策略：</span>

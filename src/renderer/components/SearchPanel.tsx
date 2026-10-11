@@ -1,6 +1,6 @@
 // src/renderer/components/SearchPanel.tsx
 // ★ 2026-09-24（用户定稿）：TopNav 皮肤（Netflix / 哔哩哔哩）把搜索改成**右上角搜索按钮** ——
-//   点击展开面板：默认展示**热搜**（复用发现页 TMDB 榜单标题，零新增接口），
+//   点击展开面板：默认展示百度电影热搜（独立榜单，保留排名和指数），
 //   输入时 250ms 防抖查**自动联想**（TMDB / 豆瓣，随「元数据来源策略」），
 //   回车或点击任一条 → 跳 /search?agg=<关键词>（复用 HomePage 的全源搜索入口）。
 // ★ 2026-09-29（用户要求）：搜索框做大；热搜做成**右侧排名榜**；左侧下方为**搜索历史**
@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { openSearchWindow } from '../lib/searchWin';
 import type { MetaSuggestion } from '../../shared/meta';
+import type { MovieHotList } from '../../shared/types';
 import {
   clearSearchHistory,
   loadSearchHistory,
@@ -30,8 +31,9 @@ export default function SearchPanel({ bar = false }: { bar?: boolean }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
-  const [hot, setHot] = useState<string[]>([]);
-  const [hotTried, setHotTried] = useState(false);
+  const [hot, setHot] = useState<MovieHotList | null>(null);
+  const [hotLoading, setHotLoading] = useState(false);
+  const [hotAttempt, setHotAttempt] = useState(0);
   const [sug, setSug] = useState<MetaSuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   /** ★ 2026-09-29：搜索历史（localStorage，最多 10 条） */
@@ -40,30 +42,18 @@ export default function SearchPanel({ bar = false }: { bar?: boolean }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  /**
-   * 热词：发现页榜单标题（电影/剧集，去重取前 16）。
-   * ★ 2026-09-25（用户报「搜索没有最近热搜的内容」）：此前只在首次打开时拉一次，
-   *   而 TMDB 跨境访问偶发超时会让那一次返回空 → 整个会话热搜永久为空。
-   *   现改为「拿到内容才记已拉过」：空结果下次打开面板会**自动重试**。
-   */
+  /** 每次打开读主进程缓存；过期后台更新，下次打开即可看到更新后的真实榜单。 */
   useEffect(() => {
-    if (!open || hotTried) return;
-    setHotTried(true);
+    if (!open) return;
+    let alive = true;
+    setHotLoading(true);
     client
-      .metaDiscover()
-      .then((secs) => {
-        const titles: string[] = [];
-        for (const s of secs || []) {
-          for (const it of s.items || []) {
-            const t = (it.title || '').trim();
-            if (t && !titles.includes(t)) titles.push(t);
-          }
-        }
-        if (titles.length) setHot(titles.slice(0, 16));
-        else setHotTried(false); // 空 → 允许下次打开面板重试
-      })
-      .catch(() => setHotTried(false));
-  }, [open, hotTried]);
+      .metaMovieHot()
+      .then((result) => { if (alive) setHot(result); })
+      .catch(() => undefined)
+      .finally(() => { if (alive) setHotLoading(false); });
+    return () => { alive = false; };
+  }, [open, hotAttempt]);
 
   // 打开面板时载入搜索历史（其它窗口/页面刚搜过的也能看到）
   useEffect(() => {
@@ -223,15 +213,19 @@ export default function SearchPanel({ bar = false }: { bar?: boolean }) {
                 )}
               </div>
               <div className="sp-rank">
-                <div className="sp-hot-tip muted">热搜榜（来自元数据榜单）</div>
-                {hot.length === 0 ? (
-                  <div className="sp-item muted">暂无热搜，直接输入关键词即可</div>
+                <div className="sp-hot-tip muted">百度电影热搜榜{hot?.stale && hot.items.length ? ' · 上次缓存' : ''}</div>
+                {hot?.fetchedAt ? <div className="muted">获取于 {new Date(hot.fetchedAt).toLocaleString('zh-CN')}</div> : null}
+                {!hot?.items.length ? (
+                  <div className="sp-item muted">
+                    {hotLoading ? '正在加载热搜…' : <>热搜暂时获取失败，仍可直接搜索 <button onClick={() => setHotAttempt(n => n + 1)}>重试</button></>}
+                  </div>
                 ) : (
                   <div className="sp-rank-list">
-                    {hot.slice(0, HOT_RANK_MAX).map((t, i) => (
-                      <div key={t} className="sp-rank-item" role="button" tabIndex={0} onClick={() => go(t)} onKeyDown={(e) => activate(e, () => go(t))} title={t}>
-                        <span className={`sp-rank-no${i < 3 ? ' top' : ''}`}>{i + 1}</span>
-                        <span className="sp-rank-txt">{t}</span>
+                    {hot.items.slice(0, HOT_RANK_MAX).map((item) => (
+                      <div key={item.title} className="sp-rank-item" role="button" tabIndex={0} onClick={() => go(item.title)} onKeyDown={(e) => activate(e, () => go(item.title))} title={`${item.title} · 热搜指数 ${item.score}`}>
+                        <span className={`sp-rank-no${item.rank <= 3 ? ' top' : ''}`}>{item.rank}</span>
+                        <span className="sp-rank-txt">{item.title}</span>
+                        <span className="muted sp-hot-score">{item.score}</span>
                       </div>
                     ))}
                   </div>

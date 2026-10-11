@@ -142,13 +142,14 @@ export function isPortraitCover(c: { w: number; h: number }): boolean {
 }
 
 /** 单次 360 图片搜索 → 原始候选（非 200 / 网络失败 → 空数组，不抛） */
-async function fetchSo360(kw: string): Promise<Array<{ title: string; img: string; w: number; h: number }>> {
+export async function fetchSo360(kw: string, signal?: AbortSignal): Promise<Array<{ title: string; img: string; w: number; h: number }>> {
   const url = `${SEARCH_API}?q=${encodeURIComponent(kw)}&src=srp&correct=${encodeURIComponent(kw)}&sn=0&pn=10`;
   const r = await undiciRequest(url, {
     method: 'GET',
     headers: { accept: 'application/json', 'User-Agent': 'Mozilla/5.0 Win-Box/0.90', Referer: SO360_REFERER },
     headersTimeout: 10000,
     bodyTimeout: 10000,
+    signal: signal || AbortSignal.timeout(15000),
     // ★ 2026-09-25：有网络代理则优先走代理（统一出站口径，见 net/proxy.dispatchChain）
     dispatcher: dispatchChain(url, agent)[0],
   });
@@ -184,5 +185,38 @@ export async function so360SearchCover(logger: Logger, name: string): Promise<Me
   } catch (e) {
     logger.w?.(`meta:360图片 搜索失败 ${(e as Error).message}`);
     return null;
+  }
+}
+
+/** Hero 专用：不能沿用优先竖版海报的选图器；排除竖图、缩略图、冲突年份/季号。 */
+export function pickSo360Backdrops(
+  candidates: ReturnType<typeof parseSo360>, name: string, year?: string,
+): ReturnType<typeof parseSo360> {
+  const wanted = norm(name);
+  const out = candidates.filter(c => {
+    const ratio = c.w / c.h;
+    if (c.w < 800 || c.h < 400 || ratio < 1.4 || ratio > 2.4) return false;
+    if (!wanted || !norm(c.title).includes(wanted) || !isRelevantHit(name, c.title)) return false;
+    const years: string[] = c.title.match(/\b(?:19|20)\d{2}\b/g) || [];
+    return !year || !years.length || years.includes(year);
+  }).sort((a, b) => {
+    const score = (c: typeof a) => (/剧照|横版|壁纸|still|backdrop/i.test(c.title) ? 10 : 0)
+      + (/下载|百度云|网盘|资源/i.test(c.title) ? -20 : 0) - Math.abs(c.w / c.h - 16 / 9);
+    return score(b) - score(a) || b.w * b.h - a.w * a.h;
+  });
+  return out.filter((c, i) => out.findIndex(v => v.img === c.img) === i).slice(0, 6);
+}
+
+export async function so360SearchBackdrops(logger: Logger, name: string, mediaType: 'movie' | 'tv', year?: string, signal?: AbortSignal) {
+  const query = `${name} ${year || ''} ${mediaType === 'tv' ? '电视剧' : '电影'} 横版 剧照`.trim();
+  try {
+    let candidates = pickSo360Backdrops(await fetchSo360(query, signal), name, year);
+    if (!candidates.length) {
+      candidates = pickSo360Backdrops(await fetchSo360(`${name} ${year || ''} 高清 壁纸`, signal), name, year);
+    }
+    return candidates;
+  } catch (e) {
+    logger.w(`meta:横版图片搜索失败 ${(e as Error).message}`);
+    return [];
   }
 }

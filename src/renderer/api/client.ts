@@ -32,7 +32,7 @@ import type {
   SubtitleSettings,
 } from '../../shared/subtitle';
 import type { DanmakuAnime, DanmakuCandidate, DanmakuSettings } from '../../shared/danmaku';
-import type { MetaHit, MetaExtra, DiscoverSection, DiscoverGenre, DiscoverGenrePage, MetaImages } from '../../shared/types';
+import type { MetaHit, MetaExtra, DiscoverSection, DiscoverGenre, DiscoverGenrePage, MetaImages, MovieHotList } from '../../shared/types';
 import type { MetaSettings, MetaSettingsView, MetaSuggestion } from '../../shared/meta';
 import type { PlayerSettings, MpvStatus, MpvStartOptions, MpvCommand, MpvStateEvent } from '../../shared/player';
 import type { BackupExportResult, BackupImportResult } from '../../shared/backup';
@@ -163,6 +163,8 @@ declare global {
         extra: (name: string, year?: string) => Promise<IpcResult<MetaExtra | null>>;
         /** ★ 发现页榜单（无源默认主页） */
         discover: (refresh?: boolean) => Promise<IpcResult<DiscoverSection[]>>;
+        movieHot: () => Promise<IpcResult<MovieHotList>>;
+        discoverImages: (name: string, mediaType: 'movie' | 'tv', year?: string, kind?: 'backdrop' | 'poster') => Promise<IpcResult<MetaImages>>;
         /** ★ 发现页「分类」：类型清单与按类型翻页 */
         genres: () => Promise<IpcResult<{ movie: DiscoverGenre[]; tv: DiscoverGenre[] }>>;
         genrePage: (mediaType: 'movie' | 'tv', genreId: number, page: number) => Promise<IpcResult<DiscoverGenrePage>>;
@@ -409,6 +411,8 @@ export const client = {
   metaExtra: (name: string, year?: string) => unwrap(window.api.meta.extra(name, year)),
   /** ★ 发现页榜单（无源默认主页；refresh 绕过 6h 缓存） */
   metaDiscover: (refresh?: boolean) => unwrap(window.api.meta.discover(refresh)),
+  metaMovieHot: () => unwrap(window.api.meta.movieHot()),
+  metaDiscoverImages: (name: string, mediaType: 'movie' | 'tv', year?: string, kind?: 'backdrop' | 'poster') => unwrap(window.api.meta.discoverImages(name, mediaType, year, kind)),
   /** ★ 发现页「分类」：TMDB 类型清单 */
   metaGenres: () => unwrap(window.api.meta.genres()),
   /** ★ 发现页「分类」：按类型取一页 */
