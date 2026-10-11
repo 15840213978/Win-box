@@ -24,6 +24,7 @@ export interface PlayerInit {
     vodId?: string;
     fromKey?: string;
     id?: string;
+    profileId?: string;
   };
   /** ★ 历史续播：上次播放进度（秒），交给播放器自动 seek（详情页正常播放不传） */
   startTime?: number;
@@ -103,6 +104,19 @@ export function playerIsFullscreen(): boolean {
   return !!playerWin && !playerWin.isDestroyed() && (fullscreenActive || playerWin.isFullScreen());
 }
 
+/**
+ * 无边框播放器的 HTML5 元素全屏不会触发 BrowserWindow 的原生全屏事件，
+ * 但窗口本身仍可能在屏幕边缘进入 Windows 的 resize 命中区。全屏期间
+ * 必须显式关闭 resizable；退出后再恢复，避免全屏时拖动边缘改变窗口大小。
+ */
+export function playerSetResizable(resizable: boolean): boolean {
+  const w = playerWin;
+  if (!w || w.isDestroyed()) return false;
+  const value = !!resizable;
+  w.setResizable(value);
+  return value;
+}
+
 let fullscreenRequest: Promise<boolean> = Promise.resolve(false);
 let fullscreenBounds: Electron.Rectangle | null = null;
 // Transparent Windows windows emit fullscreen events but may keep reporting
@@ -142,12 +156,18 @@ export function playerSetFullscreen(fullscreen: boolean): Promise<boolean> {
     if (alreadyFullscreen === wanted) {
       // Transparent Windows windows can report false after the native leave
       // event before the saved normal bounds have been restored.
-      if (!wanted) restoreFullscreenBounds(current);
+      if (wanted) current.setResizable(false);
+      else {
+        restoreFullscreenBounds(current);
+        current.setResizable(true);
+      }
       return wanted ? alreadyFullscreen : false;
     }
     if (wanted) {
       fullscreenBounds = current.isMaximized() ? current.getNormalBounds() : current.getBounds();
       if (current.isMaximized()) current.unmaximize();
+      // 先锁住无边框窗口的系统边缘缩放，再进入原生全屏。
+      current.setResizable(false);
     }
     await new Promise<void>((resolve) => {
       let settled = false;
@@ -168,11 +188,16 @@ export function playerSetFullscreen(fullscreen: boolean): Promise<boolean> {
     const actual = fullscreenActive || current.isFullScreen();
     if (!wanted) {
       if (!fullscreenActive) restoreFullscreenBounds(current);
+      current.setResizable(true);
       // The leave event is authoritative for transparent windows; never
       // return a stale isFullScreen() value after the transition has ended.
       return false;
     }
-    if (!actual) fullscreenBounds = null;
+    if (!actual) {
+      // 原生全屏请求失败时也不能把窗口永久留在不可缩放状态。
+      current.setResizable(true);
+      fullscreenBounds = null;
+    }
     return actual;
   });
   return fullscreenRequest;
@@ -268,6 +293,7 @@ export function openPlayerWindow(init: PlayerInit): void {
   playerWin.on('enter-full-screen', () => {
     if (playerWin && !playerWin.isDestroyed()) {
       fullscreenActive = true;
+      playerWin.setResizable(false);
       playerWin.webContents.invalidate();
       playerWin.webContents.send('player:fullscreen', true);
     }
@@ -278,6 +304,7 @@ export function openPlayerWindow(init: PlayerInit): void {
       // Restore here, after the native leave event, rather than relying on
       // BrowserWindow.isFullScreen(), which is unreliable for transparent windows.
       restoreFullscreenBounds(playerWin);
+      playerWin.setResizable(true);
       playerWin.webContents.invalidate();
       playerWin.webContents.send('player:fullscreen', false);
     }
@@ -316,15 +343,17 @@ export function openPlayerWindow(init: PlayerInit): void {
 }
 
 /** 主窗口换集：通知播放器窗口切换到指定集 */
-export function playerSwitchEpisode(request: number | PlayerEpisodeSwitch): void {
-  if (playerWin && !playerWin.isDestroyed()) {
-    if (typeof request === 'number') {
-      playerWin.webContents.send('player:switchEp', request);
-    } else if (pendingInit) {
-      const next = applyEpisodeSwitch(pendingInit, request);
-      if (next) playerWin.webContents.send('player:init', stampInit(next));
-    }
+export function playerSwitchEpisode(request: number | PlayerEpisodeSwitch): boolean {
+  if (!playerWin || playerWin.isDestroyed()) return false;
+  if (typeof request === 'number') {
+    playerWin.webContents.send('player:switchEp', request);
+    return true;
   }
+  if (!pendingInit) return false;
+  const next = applyEpisodeSwitch(pendingInit, request);
+  if (!next) return false;
+  playerWin.webContents.send('player:init', stampInit(next));
+  return true;
 }
 
 /**

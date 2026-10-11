@@ -28,7 +28,7 @@ const AUTO_AGG_DONE = new Set<string>();
 export default function DetailPage({
   onPlay,
 }: {
-  onPlay: (url: string, name: string, fromKey: string, id: string, meta?: { pic?: string; remarks?: string; sourceName?: string; title?: string; vodId?: string; episodes?: Episode[]; epIndex?: number; flag?: string }) => void;
+  onPlay: (url: string, name: string, fromKey: string, id: string, meta?: { pic?: string; remarks?: string; sourceName?: string; title?: string; vodId?: string; episodes?: Episode[]; epIndex?: number; flag?: string; profileId?: string }) => void;
 }) {
   const routerParams = useParams<{ key: string; id: string }>();
   const location = useLocation();
@@ -289,6 +289,9 @@ export default function DetailPage({
     // ★ parse=1 的地址要走「解析接口 → 隐藏窗口嗅探」，可能耗时十几秒 → 按钮上屏进度，别让用户以为没反应
     setBusy(true);
     try {
+      // 在解析前捕获所属档案，不能在解析结束或进度回写时读取另一窗口已切换的订阅。
+      const cfg = await client.cfgGet();
+      if (!playGenRef.current.isCurrent(gen)) return;
       const r = await client.play({ key: key!, flag, id: target.url });
       if (!playGenRef.current.isCurrent(gen)) return; // 过期结果：不要顶掉用户后来选的播放
       // ★ 2026-09-29：网盘专用链接未绑定 Cookie → 弹绑定窗口（预选该网盘）；绑定成功后自动重播
@@ -307,7 +310,8 @@ export default function DetailPage({
       onPlay(r.url || target.url, `${displayName} - ${label}`, key!, id!, {
         pic: detail.pic,
         remarks: label,
-        sourceName: displayName ? displayName.split(' - ')[0] : undefined,
+        sourceName: cfg.sources.find((s) => s.key === key)?.name || key,
+        profileId: cfg.activeProfileId,
         title: displayName || undefined, // ★ 剧名副名（详情页主标题），供字幕检索使用，避免从集名反推失败
         vodId: detail.id,
         // 换集导航数据：完整集列表 + 当前集下标 + 播放源 flag

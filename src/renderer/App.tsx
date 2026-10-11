@@ -396,6 +396,7 @@ function AppShell() {
       episodes?: Episode[];
       epIndex?: number;
       flag?: string;
+      profileId?: string;
     },
   ) => {
     const eps = meta?.episodes || [];
@@ -403,8 +404,23 @@ function AppShell() {
     const target = eps[idx];
     // ★ 剧名副名优先用详情页 detail.name（meta.title）；无则回退从 name 反推首段
     const base = (meta?.title?.trim() || name.split(' - ')[0] || '').trim();
-    const openBuiltin = (): void => {
-      void client.playerOpen({
+    const openBuiltin = async (): Promise<void> => {
+      // 播放器已打开且仍是同一部片时，传递完整集上下文复用窗口；
+      // 主进程会校验 key/vodId，不匹配时返回 false，避免把另一部片误切集。
+      try {
+        const switched = await client.playerSwitchEp({
+          key: fromKey,
+          vodId: meta?.vodId || id,
+          flag: meta?.flag || '',
+          episodes: eps,
+          epIndex: idx,
+          profileId: meta?.profileId,
+        });
+        if (switched) return;
+      } catch {
+        // 播放器尚未打开或 IPC 失败，继续走正常打开流程。
+      }
+      await client.playerOpen({
         key: fromKey,
         flag: meta?.flag || '',
         episodes: eps,
@@ -417,6 +433,7 @@ function AppShell() {
           pic: meta?.pic,
           remarks: meta?.remarks,
           sourceName: meta?.sourceName,
+          profileId: meta?.profileId,
           vodId: meta?.vodId,
           fromKey,
           id,
@@ -432,11 +449,12 @@ function AppShell() {
       pic: meta?.pic,
       remarks: meta?.remarks,
       sourceName: meta?.sourceName,
+      profileId: meta?.profileId,
       vodId: meta?.vodId,
       // 同集已有进度 → 外部播放器直接续播（外部播放器无法回传进度，故保留历史里的位置）
-      seek: sameEpProgress(fromKey, meta?.vodId, rawUrl),
+      seek: sameEpProgress(fromKey, meta?.vodId, rawUrl, meta?.profileId),
     }).then((out) => {
-      if (!out.played) openBuiltin();
+      if (!out.played) void openBuiltin();
     });
   };
 

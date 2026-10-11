@@ -10,6 +10,7 @@ import { uiMem, recordWatch, saveUiMemory, markHistoryOnlyWriter, historyGroupKe
 import { formatEpisodeLabel } from '../lib/epName';
 import { playerWindowTitle } from '../lib/videoResolution';
 import { makeStaleGuard, acceptInitSeq } from '../lib/staleGuard';
+import { restoreHistorySource } from '../lib/historySource';
 import type { PlayResult } from '../../shared/types';
 
 /**
@@ -29,7 +30,7 @@ export interface PlayerInitData {
   subtitleTitle?: string;
   lastUrl: string;
   lastName: string;
-  meta?: { pic?: string; remarks?: string; sourceName?: string; vodId?: string; fromKey?: string; id?: string };
+  meta?: { pic?: string; remarks?: string; sourceName?: string; vodId?: string; fromKey?: string; id?: string; profileId?: string };
   /** ★ 历史续播：上次播放进度（秒），交给播放器自动 seek（详情页正常播放不传） */
   startTime?: number;
   /**
@@ -91,6 +92,11 @@ export default function PlayerPage() {
     setParseMsg('');
     setDriveBind(null);
     try {
+      // 播放器打开后主窗口可能再次切订阅；换集/重试也恢复同一份订阅。
+      if (!preparedUrl && d.meta?.profileId) {
+        await restoreHistorySource(client, { profileId: d.meta.profileId, sourceKey: d.key, sourceName: d.meta.sourceName });
+        if (!resolveGen.current.isCurrent(gen)) return;
+      }
       const r: PlayResult = preparedUrl ? { url: preparedUrl, parse: 0, flag: d.flag, playUrl: '' } : await client.play({ key: d.key, flag: d.flag, id: target.url });
       if (!resolveGen.current.isCurrent(gen)) return; // 过期结果：不 setActiveUrl、不记历史
       setDriveBind(r.needDriveCookieBind || null);
@@ -114,7 +120,7 @@ export default function PlayerPage() {
     } finally {
       if (resolveGen.current.isCurrent(gen)) setResolving(false);
     }
-    // 记录观看历史（url 去重 + 刮削元数据）
+    // 所属档案在初始化时固定，进度回写不能读取后来已切换的当前订阅。
     if (d.meta?.fromKey || d.meta?.id) {
       uiMem.playSource = { fromKey: d.meta?.fromKey || '', id: d.meta?.id || '', name: display };
     }
@@ -127,8 +133,9 @@ export default function PlayerPage() {
       remarks: label,
       sourceName: d.meta?.sourceName,
       sourceKey: d.meta?.fromKey,
+      profileId: d.meta?.profileId,
       vodId: d.meta?.vodId ?? d.meta?.id,
-      time: 0,
+      time: d.startTime || 0,
     });
     // ★ 立即落盘：历史由本（播放器）窗口写入，主窗口靠读 localStorage 同步；
     //   若等 schedulePersist 的 2s 防抖，用户快速切回历史页会读到过期/空数据。
@@ -142,6 +149,23 @@ export default function PlayerPage() {
       const hydrateGen = resolveGen.current.next();
       setResolving(true);
       setActiveUrl('');
+      if (d.key && d.meta?.profileId) {
+        try {
+          await restoreHistorySource(client, { profileId: d.meta.profileId, sourceKey: d.key, sourceName: d.meta.sourceName });
+          if (!resolveGen.current.isCurrent(hydrateGen)) return;
+        } catch (e) {
+          if (!resolveGen.current.isCurrent(hydrateGen)) return;
+          setParseMsg(e instanceof Error ? e.message : String(e));
+          setResolving(false);
+          return;
+        }
+      } else if (d.key) {
+        try {
+          const cfg = await client.cfgGet();
+          if (!resolveGen.current.isCurrent(hydrateGen)) return;
+          d = { ...d, meta: { ...d.meta, profileId: cfg.activeProfileId } };
+        } catch { /* 兼容不提供档案信息的旧初始化调用 */ }
+      }
       if (d.episodes?.length === 1 && d.meta?.vodId && d.key) {
         try {
           const detail = await client.detail({ key: d.key, ids: [d.meta.vodId] });
@@ -163,8 +187,10 @@ export default function PlayerPage() {
   // 主窗口换集 → 本页切换到对应集
   const applySwitch = useCallback(
     (idx: number) => {
-      if (init) {
+      if (init && Number.isInteger(idx) && idx >= 0 && idx < init.episodes.length) {
         const next = { ...init, startTime: 0, lastUrl: '' };
+        // 保持初始化上下文与显示状态一致；后续重试/主窗口复用不能回到旧集。
+        next.epIndex = idx;
         setInit(next);
         void resolve(next, idx);
       }
@@ -207,8 +233,9 @@ export default function PlayerPage() {
   // 播放器内换集
   const goEp = useCallback(
     (idx: number) => {
-      if (init) {
+      if (init && Number.isInteger(idx) && idx >= 0 && idx < init.episodes.length) {
         const next = { ...init, startTime: 0, lastUrl: '' };
+        next.epIndex = idx;
         setInit(next);
         void resolve(next, idx);
       }
@@ -235,6 +262,7 @@ export default function PlayerPage() {
       flag: init?.flag,
       sourceName: init?.meta?.sourceName,
       sourceKey: init?.meta?.fromKey,
+      profileId: init?.meta?.profileId,
       vodId: init?.meta?.vodId ?? init?.meta?.id,
       pic: init?.meta?.pic,
     };
@@ -268,6 +296,7 @@ export default function PlayerPage() {
             flag: c.flag,
             sourceName: c.meta?.sourceName,
             sourceKey: c.meta?.fromKey,
+            profileId: c.meta?.profileId,
             vodId: c.meta?.vodId ?? c.meta?.id,
             pic: c.meta?.pic,
             name: c.name,

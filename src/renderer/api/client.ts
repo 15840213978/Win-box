@@ -209,7 +209,7 @@ declare global {
       };
       player: {
         open: (init: unknown) => Promise<IpcResult<void>>;
-        switchEp: (request: number | import('../../shared/playerEpisode').PlayerEpisodeSwitch) => Promise<IpcResult<void>>;
+        switchEp: (request: number | import('../../shared/playerEpisode').PlayerEpisodeSwitch) => Promise<IpcResult<{ switched: boolean }>>;
         /** ★ 2026-09-30：订阅就绪 → 主进程重发最新 init（新窗口首推与订阅的竞态） */
         ready: () => Promise<IpcResult<{ ok: boolean }>>;
         isOpen: () => Promise<IpcResult<{ open: boolean }>>;
@@ -331,7 +331,8 @@ export const client = {
   /** ★ 2026-09-30：本次主进程启动的会话标识（渲染层判定「新一次启动」→ 丢页面状态类记忆） */
   systemSessionId: () => unwrap(window.api.system.sessionId()),
   playerOpen: (init: unknown) => unwrap(window.api.player.open(init)),
-  playerSwitchEp: (request: number | import('../../shared/playerEpisode').PlayerEpisodeSwitch) => unwrap(window.api.player.switchEp(request)),
+  playerSwitchEp: async (request: number | import('../../shared/playerEpisode').PlayerEpisodeSwitch) =>
+    (await unwrap(window.api.player.switchEp(request))).switched,
   /** ★ 2026-09-30：播放器窗口订阅就绪 → 重发最新 init（修新窗口「等待播放…」竞态） */
   playerReady: () => unwrap(window.api.player.ready()),
   playerIsOpen: () => unwrap(window.api.player.isOpen()),
@@ -342,6 +343,7 @@ export const client = {
   playerIsMini: () => unwrap(window.api.player.isMini()),
   playerSetFullscreen: (fullscreen: boolean) => unwrap(window.api.player.setFullscreen(fullscreen)),
   playerIsFullscreen: () => unwrap(window.api.player.isFullscreen()),
+  playerSetResizable: (resizable: boolean) => unwrap(window.api.player.setResizable(resizable)),
   playerOnMini: (cb: (mini: boolean) => void) => window.api.player.onMini(cb),
   playerOnFullscreen: (cb: (fullscreen: boolean) => void) => window.api.player.onFullscreen(cb),
   bossGet: () => unwrap(window.api.boss.get()),

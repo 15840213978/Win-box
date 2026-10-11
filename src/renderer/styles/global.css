@@ -602,7 +602,13 @@ tr.active-row { background: var(--accent-soft) !important; outline: 1px solid rg
   width: 14px; height: 14px; border-radius: 50%;
   background: #fff; box-shadow: 0 0 6px rgba(0, 0, 0, .5); transition: bottom .1s linear;
 }
-.vplayer:fullscreen { border-radius: 0; }
+.vplayer:fullscreen { border-radius: 0; cursor: none; }
+/*
+   全屏时窗口已经占满屏幕，屏幕边缘不应再显示可用于拖拽窗口的光标。
+   HTML5 全屏使用 :fullscreen；MPV 使用 BrowserWindow 原生全屏，由根节点
+   data-player-fullscreen 标记。按钮自身仍可按需要覆盖为 pointer。
+*/
+:root[data-player-fullscreen] .app.pwin { cursor: none; }
 /* ★ 2026-09-28（用户要求）：说明页（详细免责声明 + 开源/赞助入口） */
 /* ---- 说明页（免责声明）----
    ★ 2026-09-29（用户报「文本只占半边、还要下滑」）：① **整块居中**；② 宽屏**两列平铺**（左右都铺开、
@@ -619,6 +625,7 @@ tr.active-row { background: var(--accent-soft) !important; outline: 1px solid rg
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev); color: var(--text); font-size: 13px; }
 .about-link:hover { border-color: var(--accent); color: var(--accent); }
 .about-link.about-sponsor:hover { border-color: #ff7a9a; color: #ff7a9a; }
+.about-link.about-group:hover { border-color: #5aa9ff; color: #5aa9ff; }
 .about-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .about-support-dialog {
   max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); padding: 14px;

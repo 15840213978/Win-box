@@ -1955,6 +1955,24 @@ export default function VideoPlayer(props: VideoPlayerProps) {
     return off;
   }, [props.allowMpv, kernel]);
 
+  // HTML5 元素全屏不会触发 BrowserWindow 的原生全屏事件。播放器窗口是无边框
+  // 且默认可缩放的，因此必须在 document fullscreenchange 时同步锁定系统边缘
+  // 缩放命中区，否则鼠标贴屏幕边缘仍会变成 resize 光标并拖动窗口。
+  useEffect(() => {
+    if (kernel === 'mpv') return;
+    const syncWindowResize = () => {
+      const active = !!document.fullscreenElement;
+      setFull(active);
+      void client.playerSetResizable(!active).catch(() => undefined);
+    };
+    document.addEventListener('fullscreenchange', syncWindowResize);
+    syncWindowResize();
+    return () => {
+      document.removeEventListener('fullscreenchange', syncWindowResize);
+      void client.playerSetResizable(true).catch(() => undefined);
+    };
+  }, [kernel]);
+
   useEffect(() => {
     const root = document.documentElement;
     if (full && kernel === 'mpv') root.dataset.playerFullscreen = '1';
@@ -1975,8 +1993,8 @@ export default function VideoPlayer(props: VideoPlayerProps) {
         .finally(() => { fullBusyRef.current = false; poke(); });
       return;
     }
-    if (document.fullscreenElement) void document.exitFullscreen().then(() => setFull(false));
-    else void wrap.requestFullscreen().then(() => setFull(true));
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void wrap.requestFullscreen();
   };
 
   // 竖向音量条：根据指针在轨道内的纵坐标设置音量（自下而上）。

@@ -157,6 +157,8 @@ export const IPC = {
   PLAYER_IS_MINI: 'player:isMini',
   PLAYER_SET_FULLSCREEN: 'player:setFullscreen',
   PLAYER_IS_FULLSCREEN: 'player:isFullscreen',
+  /** 全屏元素（HTML5）也需要锁定无边框窗口的系统边缘缩放命中区 */
+  PLAYER_SET_RESIZABLE: 'player:setResizable',
   // 老板键（全局快捷键隐藏/恢复）
   BOSS_GET: 'boss:get',
   BOSS_SET: 'boss:set',
