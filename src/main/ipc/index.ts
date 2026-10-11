@@ -34,7 +34,7 @@ import type { DlnaService } from '../dlna/DlnaService';
 import type { UpdateProgress } from '../../shared/update';
 import type { UpdateService } from '../update/UpdateService';
 // 独立播放器窗口
-import { openPlayerWindow, playerSwitchEpisode, isPlayerOpen, closePlayerWindow, playerSetMini, playerIsMini, playerWindow, playerResendInit, onPlayerWindowClosed, isPlayerWindow, playerSetFullscreen, playerIsFullscreen } from '../player/PlayerWindow';
+import { openPlayerWindow, playerSwitchEpisode, isPlayerOpen, closePlayerWindow, playerSetMini, playerIsMini, playerWindow, playerResendInit, onPlayerWindowClosed, isPlayerWindow, playerSetFullscreen, playerIsFullscreen, playerSetResizable } from '../player/PlayerWindow';
 // ★ 2026-10-08 MPV 高兼容播放内核（独立播放器窗口内嵌 --wid）
 import { MpvController } from '../player/MpvController';
 // ★ 2026-10-08 详情页独立窗口（外观开关控制；见 renderer/lib/detailWin.ts）
@@ -507,8 +507,7 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
     return { ok: true };
   }, log);
   registerHandler(IPC.PLAYER_SWITCH_EP, (_e: any, request: number | import('../../shared/playerEpisode').PlayerEpisodeSwitch) => {
-    playerSwitchEpisode(request);
-    return { ok: true };
+    return { switched: playerSwitchEpisode(request) };
   }, log);
   registerHandler(IPC.PLAYER_IS_OPEN, () => ({ open: isPlayerOpen() }), log);
   registerHandler(IPC.PLAYER_GET_INIT, () => ({ open: isPlayerOpen() }), log);
@@ -524,6 +523,7 @@ export function registerIpc(host: SpiderHost, dav: DavService, dlna: DlnaService
   registerHandler(IPC.PLAYER_IS_MINI, () => ({ mini: playerIsMini() }), log);
   registerHandler(IPC.PLAYER_SET_FULLSCREEN, async (_e: any, fullscreen: boolean) => ({ fullscreen: await playerSetFullscreen(!!fullscreen) }), log);
   registerHandler(IPC.PLAYER_IS_FULLSCREEN, () => ({ fullscreen: playerIsFullscreen() }), log);
+  registerHandler(IPC.PLAYER_SET_RESIZABLE, (_e: any, resizable: boolean) => ({ resizable: playerSetResizable(!!resizable) }), log);
   registerHandler('player:close', () => {
     closePlayerWindow();
     return { ok: true };

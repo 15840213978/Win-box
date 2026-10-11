@@ -19,6 +19,8 @@ import { recordWatch, saveUiMemory } from './uiMemory';
 export interface VodExternalPlayInput {
   /** 源 key（重新解析/记历史用） */
   key: string;
+  /** 所属订阅档案；历史页切换订阅后传入 */
+  profileId?: string;
   /** 播放源 flag */
   flag: string;
   /** 原始 episode url（**记历史与重新解析都用它**，直链可能过期） */
@@ -58,7 +60,9 @@ export async function playVodExternal(a: VodExternalPlayInput): Promise<VodExter
   const rawUrl = (a.rawUrl || '').trim();
   if (!rawUrl) return { played: false };
   let r: { url?: string; parse?: number; needDriveCookieBind?: string };
+  let profileId = a.profileId;
   try {
+    if (profileId === undefined) profileId = await client.cfgGet().then((c) => c.activeProfileId).catch(() => '');
     r = await client.play({ key: a.key, flag: a.flag, id: rawUrl });
   } catch {
     return { played: false }; // 解析失败：交给内置播放器窗口显示原因
@@ -80,6 +84,7 @@ export async function playVodExternal(a: VodExternalPlayInput): Promise<VodExter
       remarks: a.remarks,
       sourceName: a.sourceName,
       sourceKey: a.key,
+      profileId,
       vodId: a.vodId,
     });
     saveUiMemory(); // 立即落盘：历史页/主窗口靠读 localStorage 同步

@@ -64,6 +64,8 @@ export interface WatchHistory {
   sourceName?: string;
   /** 来源源 key（点击可回详情） */
   sourceKey?: string;
+  /** ★ 所属订阅档案 ID；历史跨订阅播放时先恢复该档案 */
+  profileId?: string;
   /** 详情 vod_id（回详情用） */
   vodId?: string;
   /** 最后播放位置（秒） */
@@ -114,6 +116,7 @@ export interface RecordWatchInput {
   remarks?: string;
   sourceName?: string;
   sourceKey?: string;
+  profileId?: string;
   vodId?: string;
   time?: number;
 }
@@ -127,12 +130,14 @@ function baseNameOfHistory(name?: string): string {
  * ★ 2026-09-29（用户报「同一部剧第一集/第二集算两条历史」）：**历史分组键** —— 同源同片合并为一条。
  *   判据优先级：`sourceKey + vodId`（最稳，跨集同键）→ `sourceKey + 片名基底` → 退回 url（保持旧行为）。
  */
-export function historyGroupKey(meta: { sourceKey?: string; vodId?: string; name?: string; url?: string }): string {
+export function historyGroupKey(meta: { sourceKey?: string; vodId?: string; name?: string; url?: string; profileId?: string }): string {
   const sk = (meta.sourceKey || '').trim();
+  const pid = (meta.profileId || '').trim();
+  const prefix = pid ? `p:${pid}:` : '';
   const vid = (meta.vodId || '').trim();
-  if (sk && vid) return `k:${sk}:${vid}`;
+  if (sk && vid) return `${prefix}k:${sk}:${vid}`;
   const base = baseNameOfHistory(meta.name);
-  if (sk && base) return `n:${sk}#${base}`;
+  if (sk && base) return `${prefix}n:${sk}#${base}`;
   return (meta.url || '').trim();
 }
 
@@ -152,9 +157,12 @@ export function recordWatch(meta: RecordWatchInput): void {
   if (!url) return;
   const key = historyGroupKey(meta) || url;
   // 兼容旧键：早先按「url」存下的同一条记录一并迁到分组键（否则会留两条）
-  const legacy = key !== url ? uiMem.history.get(url) : undefined;
+  const oldKey = historyGroupKey({ ...meta, profileId: undefined });
+  const old = key !== oldKey ? uiMem.history.get(oldKey) : undefined;
+  const legacy = (old && !old.profileId ? old : undefined) || (key !== url ? uiMem.history.get(url) : undefined);
   const prev = uiMem.history.get(key) || legacy;
   if (legacy && key !== url) uiMem.history.delete(url);
+  if (old === legacy && key !== oldKey) uiMem.history.delete(oldKey);
   const curEp = meta.rawUrl || url;
   const prevEp = prev?.rawUrl || prev?.url || '';
   const sameEp = !!prev && prevEp === curEp;
@@ -167,6 +175,7 @@ export function recordWatch(meta: RecordWatchInput): void {
     remarks: meta.remarks ?? prev?.remarks,
     sourceName: meta.sourceName ?? prev?.sourceName,
     sourceKey: meta.sourceKey ?? prev?.sourceKey,
+    profileId: meta.profileId ?? prev?.profileId,
     vodId: meta.vodId ?? prev?.vodId,
     // ★ 换成新一集时进度归零重算（不能沿用上一集看到第 40 分钟的位置）
     time: Math.max(0, sameEp ? (meta.time ?? prev?.time ?? 0) : (meta.time ?? 0)),
@@ -180,11 +189,12 @@ export function recordWatch(meta: RecordWatchInput): void {
  * 同一集已有进度（秒）—— 拉起外部播放器时作为起播位置。
  * 不同集（或没有记录）→ 0（外部播放器无法回传进度，跨集沿用旧位置会"跳错集"）。
  */
-export function sameEpProgress(sourceKey: string | undefined, vodId: string | undefined, rawUrl: string): number {
+export function sameEpProgress(sourceKey: string | undefined, vodId: string | undefined, rawUrl: string, profileId?: string): number {
   const ep = (rawUrl || '').trim();
   if (!ep) return 0;
-  const key = historyGroupKey({ sourceKey, vodId, url: ep });
-  const it = uiMem.history.get(key) || uiMem.history.get(ep);
+  const key = historyGroupKey({ sourceKey, vodId, url: ep, profileId });
+  const legacyKey = historyGroupKey({ sourceKey, vodId, url: ep });
+  const it = uiMem.history.get(key) || uiMem.history.get(legacyKey) || uiMem.history.get(ep);
   if (!it) return 0;
   const same = (it.rawUrl || it.url) === ep;
   return same ? Math.max(0, Math.floor(it.time || 0)) : 0;
@@ -271,6 +281,7 @@ export function normalizeWatch(url: string, ex: Partial<WatchHistory>): WatchHis
     remarks: ex.remarks,
     sourceName: ex.sourceName,
     sourceKey: ex.sourceKey,
+    profileId: ex.profileId,
     vodId: ex.vodId,
     time: Number(ex.time) || 0,
     updatedAt: Number(ex.updatedAt) || 0,
@@ -358,8 +369,12 @@ export function regroupHistory(
   tombstones: Map<string, number>,
 ): Map<string, WatchHistory> {
   const out = new Map<string, WatchHistory>();
+  // 旧历史首次续播补齐 profileId 后，写盘合并不能把原来的无档案记录复活成第二条。
+  const scoped = new Set(Array.from(map.values()).filter((it) => it?.profileId)
+    .map((it) => `${historyGroupKey({ ...it, profileId: undefined })}\n${it.rawUrl || it.url}`));
   for (const [k, it] of map) {
     if (!it) continue;
+    if (!it.profileId && scoped.has(`${historyGroupKey(it)}\n${it.rawUrl || it.url}`)) continue;
     const gk = historyGroupKey(it) || k;
     if (tombstoneActive(tombstones, gk, it.updatedAt || 0)) continue;
     const cur = out.get(gk);
@@ -622,6 +637,7 @@ export function latestOf(entries: Array<[string, unknown]> | null | undefined, u
       remarks: it.remarks,
       sourceName: it.sourceName,
       sourceKey: it.sourceKey,
+      profileId: it.profileId,
       vodId: it.vodId,
       time: Number(it.time) || 0,
       updatedAt: Number(it.updatedAt) || 0,

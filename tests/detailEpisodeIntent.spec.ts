@@ -44,4 +44,20 @@ describe('detail episode playback intent', () => {
     expect(source).not.toContain('onClick={play}');
     expect(source).toContain('onClick={() => { void play(); }}');
   });
+
+  it('main-window playback handoff carries the complete episode context', () => {
+    const app = readFileSync(new URL('../src/renderer/App.tsx', import.meta.url), 'utf8');
+    expect(app).toContain('client.playerSwitchEp({');
+    expect(app).toMatch(/key:\s*fromKey/);
+    expect(app).toMatch(/vodId:\s*meta\?\.vodId\s*\|\|\s*id/);
+    expect(app).toMatch(/flag:\s*meta\?\.flag\s*\|\|\s*''/);
+    expect(app).toContain('episodes: eps');
+    expect(app).toContain('epIndex: idx');
+  });
+
+  it('player-local previous/next switching updates init.epIndex before resolving', () => {
+    const player = readFileSync(new URL('../src/renderer/pages/PlayerPage.tsx', import.meta.url), 'utf8');
+    expect(player).toMatch(/const next = \{ \.\.\.init, startTime: 0, lastUrl: '' \};\s*\/\/[^\n]*\n\s*next\.epIndex = idx/);
+    expect(player).toContain('idx >= 0 && idx < init.episodes.length');
+  });
 });

@@ -207,7 +207,7 @@ const api = {
   },
   player: {
     open: (init: unknown) => invoke(IPC.PLAYER_OPEN, init),
-    switchEp: (request: number | import('../shared/playerEpisode').PlayerEpisodeSwitch) => invoke(IPC.PLAYER_SWITCH_EP, request),
+    switchEp: (request: number | import('../shared/playerEpisode').PlayerEpisodeSwitch) => invoke<{ switched: boolean }>(IPC.PLAYER_SWITCH_EP, request),
     /** ★ 2026-09-30：渲染层订阅就绪 → 主进程重发最新 init（新窗口首推与订阅的竞态，见 PlayerWindow） */
     ready: () => invoke(IPC.PLAYER_READY),
     isOpen: () => invoke<{ open: boolean }>(IPC.PLAYER_IS_OPEN),
@@ -216,6 +216,7 @@ const api = {
     isMini: () => invoke<{ mini: boolean }>(IPC.PLAYER_IS_MINI),
     setFullscreen: (fullscreen: boolean) => invoke<{ fullscreen: boolean }>(IPC.PLAYER_SET_FULLSCREEN, fullscreen),
     isFullscreen: () => invoke<{ fullscreen: boolean }>(IPC.PLAYER_IS_FULLSCREEN),
+    setResizable: (resizable: boolean) => invoke<{ resizable: boolean }>(IPC.PLAYER_SET_RESIZABLE, resizable),
     // 监听主进程推送：初始化数据 / 换集
     onInit: (cb: (init: unknown) => void) => {
       const l = (_e: unknown, init: unknown) => cb(init);

@@ -15,6 +15,7 @@ import { wrapImageUrlForRelay } from '../../shared/driveProvider';
 import { playVodExternal } from '../lib/externalPlay';
 // 所有详情统一由独立窗口展示。
 import { openDetailRoute } from '../lib/detailWin';
+import { restoreHistorySource } from '../lib/historySource';
 
 /** 单次补图最多查询多少个不同片名（与首页同口径，避免一次性打爆 TMDB 限流） */
 const MAX_UNIQUE_QUERY = 18;
@@ -223,19 +224,11 @@ export default function HistoryPage() {
     //   故点开前重读该 url 的最新记录（updatedAt 最新），拿不到才回退快照。
     const latest = loadLatestWatch(it.url) || it;
     const base = (latest.name || '').split(' - ')[0] || latest.name || '';
-    // 历史来源 key 只用于本次解析，不修改点播页已选好的展示源。
-    const sk = (latest.sourceKey || '').trim();
     setNotice('');
     void (async () => {
-      if (sk) {
-        try {
-          const cfg = await client.cfgGet();
-          const exists = (cfg.sources || []).some((s) => s.key === sk);
-          if (!exists) setNotice(`历史来源「${latest.sourceName || sk}」已不在当前订阅中，已按现有配置尝试播放`);
-        } catch {
-          /* 读取/切换失败不阻塞播放（仍按记录里的 key 解析） */
-        }
-      }
+      // 先恢复所属订阅，再打开播放器/外部播放器；不能把旧 key 交给当前的其他订阅。
+      const source = await restoreHistorySource(client, latest);
+      window.dispatchEvent(new CustomEvent('winbox:sources-changed'));
       /**
        * ★ 2026-09-30（用户要求）：显式绑定了第三方播放器 → 直接由它续播（不再开内置播放器窗口）。
        *   ★ 2026-10-08：改为**勾选项**总开关 —— 未勾选「启用点播外部播放器」时一律走内置播放器（即使填了路径）。
@@ -243,13 +236,14 @@ export default function HistoryPage() {
        *   未勾选启用 / 未填路径 / 解析不出直连地址 → 回退内置播放器窗口（startTime 续播，旧链路不变）。
        */
       const out = await playVodExternal({
-        key: latest.sourceKey || '',
+        key: source.key,
+        profileId: source.profileId,
         flag: latest.flag || '',
         rawUrl: latest.rawUrl || latest.url,
         display: latest.name || '播放',
         pic: latest.pic,
         remarks: latest.remarks,
-        sourceName: latest.sourceName,
+        sourceName: source.name,
         vodId: latest.vodId,
         seek: latest.time,
       });
@@ -259,7 +253,7 @@ export default function HistoryPage() {
         return;
       }
       await client.playerOpen({
-        key: latest.sourceKey || '',
+        key: source.key,
         flag: latest.flag || '',
         episodes: [{ name: latest.remarks || '播放', url: latest.rawUrl || latest.url }],
         epIndex: 0,
@@ -271,9 +265,10 @@ export default function HistoryPage() {
         meta: {
           pic: latest.pic,
           remarks: latest.remarks,
-          sourceName: latest.sourceName,
+          sourceName: source.name,
           vodId: latest.vodId,
-          fromKey: latest.sourceKey,
+          fromKey: source.key,
+          profileId: source.profileId,
           id: latest.vodId,
         },
       });
@@ -281,7 +276,13 @@ export default function HistoryPage() {
   };
 
   const openDetail = (it: WatchHistory) => {
-    if (it.sourceKey && it.vodId) void openDetailRoute((to) => nav(to), it.sourceKey, it.vodId).catch((e) => setNotice(`打开详情失败：${e instanceof Error ? e.message : String(e)}`));
+    if (it.sourceKey && it.vodId) {
+      const latest = loadLatestWatch(it.url) || it;
+      void restoreHistorySource(client, latest).then((source) => {
+        window.dispatchEvent(new CustomEvent('winbox:sources-changed'));
+        return openDetailRoute((to) => nav(to), source.key, latest.vodId!);
+      }).catch((e) => setNotice(`打开详情失败：${e instanceof Error ? e.message : String(e)}`));
+    }
     else play(it);
   };
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveSupportImage } from '../src/build/supportImage';
+import { resolveGroupImage, resolveSupportImage } from '../src/build/supportImage';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -34,5 +34,19 @@ describe('support artwork build selection', () => {
     expect(() => resolveSupportImage(root, undefined, true)).toThrow('original support PNG');
     expect(() => resolveSupportImage(root, placeholder, true)).toThrow('original support PNG');
     expect(() => resolveSupportImage(root, 'missing.png')).toThrow('does not exist');
+  });
+
+  it('selects and validates the private group QR image', () => {
+    const { root, png } = fixture();
+    const placeholder = join(root, 'src/renderer/assets/group-join-placeholder.svg');
+    mkdirSync(dirname(placeholder), { recursive: true });
+    writeFileSync(placeholder, '<svg/>');
+    const original = join(root, '.tmp/private-assets/group-join.jpg');
+    mkdirSync(dirname(original), { recursive: true });
+    const jpg = Buffer.from([0xff, 0xd8, ...png, 0xff, 0xd9]);
+    writeFileSync(original, jpg);
+    expect(resolveGroupImage(root)).toBe(original);
+    expect(resolveGroupImage(root, undefined, true)).toBe(original);
+    expect(() => resolveGroupImage(root, placeholder, true)).toThrow('original group QR artwork');
   });
 });
