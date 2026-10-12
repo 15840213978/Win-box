@@ -56,11 +56,11 @@ import {
   wrapPlayUrlWithHeaders,
 } from '../../shared/driveProvider';
 import { join, dirname } from 'node:path';
+import { directPlayUrlError } from '../../shared/playbackResult';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { JarSpiderBridge, normalizeJarUrl } from '../../engine/spider/JarSpiderBridge';
+import { mergeCloudDriveTokens } from '../../engine/spider/driveExt';
 import {
-  removePizazzCookieFile,
-  removeWexCookieFile,
   syncPizazzCookieFiles,
   syncWexCookieFiles,
   spiderSandboxDir,
@@ -113,26 +113,26 @@ import {
 import { endpointLabel, rankDanmakuAnimes } from '../../engine/danmaku/endpoints';
 import type { DanmakuAnime, DanmakuApiEndpoint, DanmakuCandidate, DanmakuSettings } from '../../shared/danmaku';
 import type { MetaHit, MetaExtra, DiscoverSection, DiscoverGenre, DiscoverGenrePage, MetaImages } from '../../shared/types';
-import type { MetaSettings, MetaSettingsView, MetaSuggestion, MetaSource } from '../../shared/meta';
+import type { MetaSettings, MetaSettingsView, MetaSuggestion } from '../../shared/meta';
 import { normalizeMetaSettings } from '../../shared/meta';
 import { MetaStore } from '../meta/MetaStore';
 import { MetaSettingsStore } from '../meta/MetaSettings';
 import {
   tmdbSearchTitle,
   tmdbExtras,
+  tmdbSuggest,
+  tmdbImages,
   tmdbDiscover,
   tmdbGenres,
   tmdbGenrePage,
-  tmdbSuggest,
-  tmdbImages,
   metaCacheKey,
   metaQueryVariants,
   setTmdbRuntime,
   hasUserTmdbKey,
 } from '../meta/tmdbProvider';
-import { doubanSearchTitle, doubanSuggest, isCjkName, DOUBAN_CACHE_PREFIX } from '../meta/doubanProvider';
-import { getTmdbCredentials } from '../meta/credentials';
-import { so360SearchCover, SO360_CACHE_PREFIX } from '../meta/so360Provider';
+import { doubanSearchTitle, doubanSuggest, DOUBAN_CACHE_PREFIX } from '../meta/doubanProvider';
+import { DomesticDiscover } from '../meta/domesticDiscover';
+import { DiscoverArtwork } from '../meta/discoverArtwork';
 import { ParseService } from '../parse/ParseService';
 import { sniffMediaUrl } from '../parse/PageSniffer';
 import { getProxySettings, jvmProxyArgs, childProxyEnv } from '../net/proxy';
@@ -279,6 +279,8 @@ export class SpiderHost {
   private metaStore: MetaStore;
   /** ★ 元数据来源配置（TMDB 自填 Key / API 代理地址 / 图片镜像地址 / 来源策略） */
   private metaSettings: MetaSettingsStore;
+  private domesticDiscover: DomesticDiscover;
+  private discoverArtwork: DiscoverArtwork;
   /** ★ 夸克已落盘待清理队列（关闭播放/窗口/退出时删除，进度仍保留在本地历史；持久化防重启丢失） */
   private pendingQuarkDeletes: Array<{ cookie: string; pdirFid: string; fid: string; dirFid?: string; path?: string; at: number; provider?: 'quark' | 'uc' | 'baidu' }> = [];
   private pendingQuarkStore: JsonStore;
@@ -381,6 +383,8 @@ export class SpiderHost {
     this.subtitles = new SubtitleStore(join(userDataDir(), 'subtitle.json'), this.logger, safeStorageDriveCodec());
     this.danmakuStore = new DanmakuStore(join(userDataDir(), 'danmaku.json'), this.logger);
     this.metaStore = new MetaStore(new JsonStore(join(userDataDir(), 'meta.json')));
+    this.domesticDiscover = new DomesticDiscover(new JsonStore(join(cacheDir(), 'discovery.json')), this.logger);
+    this.discoverArtwork = new DiscoverArtwork(new JsonStore(join(cacheDir(), 'discovery-artwork.json')), cacheDir(), this.logger);
     // ★ 2026-09-24：元数据来源配置（TMDB 自填 Key/镜像地址 + 来源策略）；装配后立即把运行期配置注入 tmdbProvider
     this.metaSettings = new MetaSettingsStore(join(userDataDir(), 'meta-settings.json'), this.logger, safeStorageDriveCodec());
     this.applyMetaRuntime();
@@ -665,9 +669,9 @@ export class SpiderHost {
   }
   driveRemove(provider: string) {
     this.drives.remove(provider);
-    // ★ 解绑 → 清掉各系 cookie 文件（jar 侧「文件存在且非空」即视为已配置，必须一并清）
-    removePizazzCookieFile(provider);
-    removeWexCookieFile(provider, spiderSandboxDir(spiderCacheDir()));
+    // Full synchronization removes the provider from every backing file,
+    // including Cloud-drive.json and the two jar cookie-file families.
+    this.syncDriveFiles();
     this.resetSpidersAfterDriveChange();
   }
 
@@ -804,17 +808,7 @@ export class SpiderHost {
     return xml;
   }
 
-  // ---- 元数据（封面/简介/演职员）来源：★ 2026-09-24 用户可在配置页选策略 ----
-  //   auto（默认）: TMDB → 豆瓣（仅中文片名）→ 360 图搜
-  //   tmdb        : 仅 TMDB（**必须用户自填 API**；未填时保存即回落 auto，见 metaSetSettings）
-  //   douban      : 仅豆瓣
-  //   search      : 仅 360 图搜（封面；简介回落源自带，符合用户定稿口径）
-  //   注：策略只约束封面/简介/详情增强；发现页（TMDB 榜单/分类）不受限。
-
-  /** 生效的来源策略 */
-  private get metaSource(): MetaSource {
-    return this.metaSettings.settings.metaSource;
-  }
+  // 封面只查询用户配置的 TMDB 或豆瓣；图片搜索只供详情背景图使用。
 
   /** 把用户配置注入 tmdbProvider（Key / API 代理地址 / 图片镜像地址） */
   private applyMetaRuntime(): void {
@@ -822,10 +816,10 @@ export class SpiderHost {
     setTmdbRuntime({ userKey: s.tmdbApiKey, apiBase: s.tmdbApiBase, imageBase: s.tmdbImageBase });
   }
 
-  /** meta:getSettings —— 配置页读取（**绝不返回内置密文**，只给能力布尔） */
+  /** meta:getSettings —— 配置页读取；内置 TMDB 已停用。 */
   metaGetSettings(): MetaSettingsView {
     const s = this.metaSettings.settings;
-    return { ...s, hasBuiltin: !!getTmdbCredentials(), hasUserKey: hasUserTmdbKey() };
+    return { ...s, hasBuiltin: false, hasUserKey: !!s.tmdbApiKey.trim() };
   }
 
   /** meta:setSettings —— 保存并即时生效（无需重启）；「仅 TMDB」缺用户 Key → 自动回落 auto */
@@ -837,10 +831,7 @@ export class SpiderHost {
     return this.metaGetSettings();
   }
 
-  /**
-   * ★ 发现页 Hero 轮播：取某部片的横版剧照/竖版海报（TMDB images，24h 内存缓存）。
-   * 与来源策略无关（Hero 属发现页范畴，不受「仅豆瓣/仅搜索」约束）；无凭据/无 id 返回空数组。
-   */
+  /** 用户配置 TMDB 后按影片 id 取图片；无凭据或无 id 返回空数组。 */
   async metaImages(mediaType: 'movie' | 'tv', tmdbId: number): Promise<MetaImages> {
     try {
       return await tmdbImages(this.logger, mediaType, tmdbId);
@@ -850,16 +841,13 @@ export class SpiderHost {
     }
   }
 
-  /** ★ 搜索面板「自动联想」：TMDB 优先（auto/tmdb），否则豆瓣；仅搜索策略无联想来源 */
+  /** 搜索面板自动联想：用户配置的 TMDB 优先，否则豆瓣。 */
   async metaSuggest(q: string): Promise<MetaSuggestion[]> {
     const term = (q || '').trim();
     if (!term) return [];
-    const src = this.metaSource;
     try {
-      if (src === 'douban') return await doubanSuggest(this.logger, term);
-      if (src === 'search') return [];
-      const list = await tmdbSuggest(this.logger, term);
-      if (list.length || src === 'tmdb') return list;
+      const list = hasUserTmdbKey() ? await tmdbSuggest(this.logger, term) : [];
+      if (list.length) return list;
       return await doubanSuggest(this.logger, term); // auto：TMDB 无结果 → 豆瓣补联想
     } catch {
       return [];
@@ -869,54 +857,32 @@ export class SpiderHost {
   /** 豆瓣查询（原名 + 净化名变体；命中/miss 都写缓存，miss 短 TTL） */
   private async doubanLookup(n: string, year?: string): Promise<MetaHit | null> {
     for (const v of metaQueryVariants(n).slice(0, DOUBAN_MAX_VARIANTS)) {
-      const dbKey = `${DOUBAN_CACHE_PREFIX}${metaCacheKey(v, year || '')}`;
+      const dbKey = `${DOUBAN_CACHE_PREFIX}cover-v2:${metaCacheKey(v, year || '')}`;
       const diskDb = this.metaStore.cacheGet(dbKey);
       if (diskDb) {
         if (diskDb.hit) return diskDb.hit; // 命中缓存（miss 短 TTL 自动过期重查 → 继续试下一个变体）
         continue;
       }
-      const db = await doubanSearchTitle(this.logger, v);
+      const db = await doubanSearchTitle(this.logger, v, year);
       this.metaStore.cacheSet(dbKey, db, Date.now());
       if (db) return db;
     }
     return null;
   }
 
-  /** 360 图片搜索兜底（无 key；带相关性过滤，宁缺勿错图） */
-  private async so360Lookup(n: string): Promise<MetaHit | null> {
-    for (const v of metaQueryVariants(n).slice(0, 1)) {
-      const soKey = `${SO360_CACHE_PREFIX}${metaCacheKey(v, '')}`;
-      const diskSo = this.metaStore.cacheGet(soKey);
-      if (diskSo) {
-        if (diskSo.hit) return diskSo.hit;
-        continue;
-      }
-      const so = await so360SearchCover(this.logger, v);
-      this.metaStore.cacheSet(soKey, so, Date.now());
-      if (so) return so;
-    }
-    return null;
-  }
-
-  /**
-   * 按名称查询封面/简介（按用户选择的来源策略分派；失败/无凭据/无命中 → null，绝不抛错）。
-   * 命中与 miss 都会缓存（着 MetaStore 的 hit/miss 双 TTL 语义）。
-   */
-  async metaSearch(name: string, year?: string): Promise<MetaHit | null> {
+  /** 调用方分别查询 TMDB 和豆瓣，以便把源封面放在二者之间；不读取图片搜索缓存。 */
+  async metaSearch(name: string, year?: string, provider?: 'tmdb' | 'douban'): Promise<MetaHit | null> {
     const n = (name || '').trim();
     if (!n) return null;
-    const src = this.metaSource;
     try {
-      if (src === 'tmdb') return await tmdbSearchTitle(this.metaStore, this.logger, n, year || undefined);
-      if (src === 'douban') return await this.doubanLookup(n, year);
-      if (src === 'search') return await this.so360Lookup(n);
-      // auto（默认，与历史行为一致）：TMDB →（仅中文片名才兜底）豆瓣 → 360 图搜
-      const tmdb = await tmdbSearchTitle(this.metaStore, this.logger, n, year || undefined);
-      if (tmdb) return tmdb;
-      if (!isCjkName(n)) return null;
-      const db = await this.doubanLookup(n, year);
-      if (db) return db;
-      return await this.so360Lookup(n);
+      if (provider !== 'douban' && hasUserTmdbKey()) {
+        try {
+          const hit = await tmdbSearchTitle(this.metaStore, this.logger, n, year || undefined);
+          if (hit) return hit;
+        } catch { /* TMDB 不可用仍允许回退到豆瓣。 */ }
+      }
+      if (provider === 'tmdb') return null;
+      return await this.doubanLookup(n, year);
     } catch (e) {
       this.logger.e('meta:搜索失败', e);
       return null;
@@ -925,13 +891,12 @@ export class SpiderHost {
 
   /**
    * ★ 2026-09-24 详情页增强：TMDB 演职员 / 类型 / 相关推荐（详情页「演员名单 + 相关推荐」区块用）。
-   * 策略为 douban/search 时返回 null（详情页用详情自带 actor 串兜底）；无凭据或无命中同样 null，绝不抛错。
+    * 无用户凭据或无命中返回 null，绝不抛错；详情页直接展示源提供的信息。
    */
   async metaExtra(name: string, year?: string): Promise<MetaExtra | null> {
     const n = (name || '').trim();
     if (!n) return null;
-    const src = this.metaSource;
-    if (src === 'douban' || src === 'search') return null;
+    if (!hasUserTmdbKey()) return null;
     try {
       return await tmdbExtras(this.metaStore, this.logger, n, year || undefined);
     } catch (e) {
@@ -940,20 +905,20 @@ export class SpiderHost {
     }
   }
 
-  /** ★ 2026-09-24 发现页：TMDB 榜单（无源默认主页；无凭据返回空数组，渲染层给提示） */
+  /** 默认国内榜单；只有用户配置 TMDB 凭据后才使用 TMDB。 */
   async metaDiscover(refresh = false): Promise<DiscoverSection[]> {
     try {
-      return await tmdbDiscover(this.logger, !!refresh);
+      return hasUserTmdbKey() ? await tmdbDiscover(this.logger, !!refresh) : await this.domesticDiscover.discover(!!refresh);
     } catch (e) {
       this.logger.w(`meta:发现页查询失败: ${(e as Error).message}`);
       return [];
     }
   }
 
-  /** ★ 2026-09-24 发现页「分类」：TMDB 类型清单（电影/剧集两套，中文） */
+  /** 分类编号必须和当前发现页来源一致。 */
   async metaGenres(): Promise<{ movie: DiscoverGenre[]; tv: DiscoverGenre[] }> {
     try {
-      return await tmdbGenres(this.logger);
+      return hasUserTmdbKey() ? await tmdbGenres(this.logger) : this.domesticDiscover.genres();
     } catch (e) {
       this.logger.w(`meta:类型清单查询失败: ${(e as Error).message}`);
       return { movie: [], tv: [] };
@@ -964,7 +929,9 @@ export class SpiderHost {
   async metaGenrePage(mediaType: string, genreId: number, page: number): Promise<DiscoverGenrePage> {
     const t: 'movie' | 'tv' = String(mediaType) === 'tv' ? 'tv' : 'movie';
     try {
-      return await tmdbGenrePage(this.logger, t, Number(genreId) || 0, Number(page) || 1);
+      return hasUserTmdbKey()
+        ? await tmdbGenrePage(this.logger, t, Number(genreId) || 0, Number(page) || 1)
+        : await this.domesticDiscover.genrePage(t, Number(genreId) || 0, Number(page) || 1);
     } catch (e) {
       this.logger.w(`meta:分类查询失败: ${(e as Error).message}`);
       return { items: [], page: 1, totalPages: 1 };
@@ -977,6 +944,25 @@ export class SpiderHost {
     const run = this.deletePendingBatch();
     this.pendingDeleteRun = run.finally(() => { this.pendingDeleteRun = null; });
     return this.pendingDeleteRun;
+  }
+
+  metaMovieHot() { return this.domesticDiscover.hot(); }
+
+  async metaDiscoverImages(name: string, mediaType: 'movie' | 'tv', year?: string, kind: 'backdrop' | 'poster' = 'backdrop') {
+    if (kind === 'poster') {
+      const hit = await this.metaSearch(name, year);
+      return { backdrops: [], posters: hit?.poster ? [hit.poster] : [] };
+    }
+    if (hasUserTmdbKey()) {
+      try {
+        const hit = await tmdbSearchTitle(this.metaStore, this.logger, name, year);
+        if (hit?.tmdbId) {
+          const images = await tmdbImages(this.logger, hit.type, hit.tmdbId);
+          if (images.backdrops.length) return images;
+        }
+      } catch { /* 背景图仍可独立使用横版图片搜索。 */ }
+    }
+    return this.discoverArtwork.images(name, mediaType, year, kind);
   }
 
   private async deletePendingBatch(): Promise<void> {
@@ -1195,10 +1181,10 @@ export class SpiderHost {
    *   此前 do=pan 分发只有百度 / UC 两条通道：site=quark 的线路**必然双未识别**并上屏
    *   「百度：未识别；UC：未识别」（正是用户看到的文案）。
    */
-  private async quarkFromPanUrl(url: string, flag: string, miss?: string[]): Promise<PlayResult | null> {
-    let share = extractQuarkShare(url);
-    let innerFid = extractEpisodeFid(url);
-    const innerName = extractEpisodeName(url);
+  private async quarkFromPanUrl(url: string, flag: string, miss?: string[], episodeId = ''): Promise<PlayResult | null> {
+    let share = extractQuarkShare(episodeId, flag) || extractQuarkShare(url, flag);
+    let innerFid = extractEpisodeFid(episodeId) || extractEpisodeFid(url);
+    const innerName = extractEpisodeName(episodeId) || extractEpisodeName(url);
     // ★ 2026-10-09：jar 的 `do=pan&site=quark` **不给分享 URL**，只给三个裸参数
     //   （实测：`shareId=e8ac5a87aa2e`（12 位 = pwd_id）、`fileId=2e3ad195….d30d`（32 位 = fid））。
     //   此前只认 `pan.quark.cn/s/<id>` → **必然「未识别」**（用户报「site=quark」播不了）。
@@ -1207,7 +1193,7 @@ export class SpiderHost {
       const pan = parsePanProxyQuery(url);
       const sid = String(pan.shareId || '').trim();
       const fid = String(pan.fileId || '').trim();
-      if (/^[0-9a-f]{10,}$/i.test(sid)) {
+      if (/^quark/i.test(pan.site || '') && /^[0-9a-f]{10,}$/i.test(sid)) {
         share = { sId: sid, passcode: '' };
         if (!innerFid && /^[0-9a-f]{20,}$/i.test(fid)) innerFid = fid;
       }
@@ -1294,23 +1280,23 @@ export class SpiderHost {
    *   调用点：绑定（driveSet / 网页登录）、解绑（删文件）、还原设置、启动（%TEMP%/沙箱可能被系统清理）。 */
   syncDriveFiles(): void {
     const tokens = this.drives.list();
-    for (const [p, v] of Object.entries(tokens)) this.syncCloudDriveConfig(p, v);
+    this.syncCloudDriveConfig(tokens);
     const written = syncPizazzCookieFiles(tokens);
     if (written.length) this.logger.i(`已同步 Pizazz 系网盘 cookie 文件：${written.join(', ')}`);
-    const wexWritten = syncWexCookieFiles(tokens, spiderSandboxDir(spiderCacheDir()));
-    if (wexWritten.length) this.logger.i(`已同步 wex 系网盘 cookie 文件：${wexWritten.join(', ')}`);
+    const sandbox = spiderSandboxDir(spiderCacheDir());
+    const wexWritten = syncWexCookieFiles(tokens, sandbox);
+    if (wexWritten.length) {
+      // 记录路径和长度，不记录 Cookie 内容；这能区分「已登录」与「Jar 实际读到的沙箱」。
+      const ucPath = wexWritten.find((p) => p.endsWith('.ucpancookie'));
+      const ucLen = ucPath ? readFileSync(ucPath, 'utf-8').trim().length : 0;
+      this.logger.i(`已同步 wex 系网盘 cookie 文件：${wexWritten.join(', ')}（sandbox=${sandbox}, ucLen=${ucLen}）`);
+    } else if (tokens.uc) {
+      this.logger.w(`wex UC cookie 未写入（sandbox=${sandbox}, ucLen=${tokens.uc.trim().length}）`);
+    }
   }
 
-  // fty 系网盘 jar 从 Cloud-drive 配置文件读的键名（Cloud_quark→quarkCookie / Cloud_uc→ucCookie）
-  private static readonly CLOUD_DRIVE_KEYS: Record<string, string> = {
-    quark: 'quarkCookie',
-    uc: 'ucCookie',
-  };
-
   /** 把网盘凭据同步写入 fty 的 Cloud-drive 配置文件（jar 源从该文件读 quarkCookie/ucCookie 等） */
-  private syncCloudDriveConfig(provider: string, value: string): void {
-    const key = SpiderHost.CLOUD_DRIVE_KEYS[provider.trim().toLowerCase()];
-    if (!key) return;
+  private syncCloudDriveConfig(tokens: Record<string, string>): void {
     const path = this.cloudDriveFilePath();
     let obj: Record<string, unknown> = {};
     try {
@@ -1319,11 +1305,11 @@ export class SpiderHost {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed as Record<string, unknown>;
       }
     } catch { /* 首次/损坏 → 重建 */ }
-    obj[key] = value;
+    obj = mergeCloudDriveTokens(obj, tokens);
     try {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, JSON.stringify(obj), 'utf-8');
-      this.logger.i(`已写入 Cloud-drive 配置 ${key} -> ${path}`);
+      this.logger.i(`已同步 Cloud-drive 配置 -> ${path}`);
     } catch (e) {
       this.logger.w(`写入 Cloud-drive 配置失败: ${(e as Error).message}`);
     }
@@ -1336,7 +1322,17 @@ export class SpiderHost {
         const ext = JSON.parse(String(s.ext || '{}')) as Record<string, unknown>;
         const cd = ext['Cloud-drive'];
         if (typeof cd === 'string' && cd.trim()) {
-          const rel = cd.trim().replace(/^\.\//, '');
+          // Spider ext is enriched to a local proxy URL before the JVM sees
+          // it, but config storage can already contain that enriched form
+          // after an import. Strip the proxy route before resolving locally.
+          let rel = cd.trim().replace(/^\.\//, '');
+          try {
+            const parsed = new URL(rel);
+            if (parsed.pathname.startsWith('/file/')) rel = decodeURIComponent(parsed.pathname.slice('/file/'.length));
+          } catch {
+            /* Relative Cloud-drive paths are the normal configuration form. */
+          }
+          rel = rel.replace(/^\/+/, '');
           return join(userDataDir(), rel);
         }
       } catch { /* ext 非 JSON，跳过 */ }
@@ -2055,7 +2051,11 @@ export class SpiderHost {
   async play(key: string, flag: string, id: string): Promise<PlayResult> {
     const t = diagTimer();
     try {
-      const r = await this.playInner(key, flag, id);
+      let r = await this.playInner(key, flag, id);
+      if (r.parse === 0) {
+        const error = directPlayUrlError(r.url);
+        if (error) r = { ...r, parse: 1, url: '', playUrl: '', message: r.message || error };
+      }
       logPlayDiag({
         kind: 'play',
         stage: 'done',
@@ -2130,9 +2130,9 @@ export class SpiderHost {
         message: `UC 网盘取流失败（${miss.join('；') || '分享文件解链失败'}）` };
     }
     // Native Quark resolution precedes playerContent and JVM self-resolution.
-    if (isQuarkSharePlay(id) || /^quark/i.test(parsePanProxyQuery(id).site || '')) {
+    if (isQuarkSharePlay(id, flag) || /^quark/i.test(parsePanProxyQuery(id).site || '')) {
       const miss: string[] = [];
-      const got = await this.quarkFromPanUrl(id, flag, miss);
+      const got = await this.quarkFromPanUrl(id, flag, miss, id);
       if (got) return got;
       return { parse: 1, url: '', playUrl: '', flag, jx: 0,
         ...(!this.driveList()['quark'] ? { needDriveCookieBind: 'quark' } : {}),
@@ -2144,11 +2144,11 @@ export class SpiderHost {
     let quarkFail = '';
     // ★ 夸克分享型播放（episode 是 pan.quark.cn/s/ 链接或含 sId 的 JSON）且已绑定夸克 →
     //   用原生 quarkTransfer 复刻「分享→转存→直链」，绕开超时的 fty jar 与被 pin 的主机。
-    if (isQuarkSharePlay(id)) {
+    if (isQuarkSharePlay(id, flag)) {
       const quarkCookie = (this.driveList() as Record<string, string>)['quark'] || '';
       if (quarkCookie) {
-        const m = /pan\.quark\.cn\/s\/([^\/#\s]+)/i.exec(id) || /"sId":\s*"([^"]+)"/.exec(id);
-        const pwdId = m ? m[1] : '';
+        const share = extractQuarkShare(id, flag);
+        const pwdId = share?.sId || '';
         if (pwdId) {
           try {
             // ★ 修复「点第6集落盘第29集」：fid 提取兼容 fid/vfid/file_id/URL 参数（旧正则只认 "fid"）
@@ -2156,7 +2156,7 @@ export class SpiderHost {
             // ★ 2026-09-29：集名一并传入 —— fid 在分享内匹配不到时按「集名/集号唯一匹配」兜底
             // ★ 2026-10-09：提取码（若有）透传 —— 带码分享的 share/token 请求必带正确 passcode
             const t = await quarkTransfer(pwdId, quarkCookie, {
-              passcode: extractQuarkShare(id)?.passcode || '',
+              passcode: share?.passcode || '',
               innerFid,
               innerName: extractEpisodeName(id),
               logger: fileLogger,
@@ -2200,7 +2200,7 @@ export class SpiderHost {
     let ucFail = '';
     if (isUcSharePlay(id)) {
       const ucCookie = (this.driveList() as Record<string, string>)['uc'] || '';
-      const share = extractUcShare(id);
+      const share = extractUcShare(id, flag);
       if (!ucCookie) {
         ucFail = '未绑定 UC 账号（Cookie 缺失）';
       } else if (share) {
@@ -2389,7 +2389,7 @@ export class SpiderHost {
               ? await this.baiduFromPanUrl(r.url, flag, miss, jvmPort, id)
               : ch === 'uc'
                 ? await this.ucFromPanUrl(r.url, flag, miss, id)
-                : await this.quarkFromPanUrl(r.url, flag, miss);
+                : await this.quarkFromPanUrl(r.url, flag, miss, id);
           if (got) return got;
         }
         if (!miss.length) miss.push(`未识别分享链接（site=${site || '未知'}）`);
@@ -2445,6 +2445,12 @@ export class SpiderHost {
             return this.playInner(key, flag, id, true);
           }
           if (bound) {
+            if (prov === 'uc' && /\[uc\]\(auth\)/i.test(String(r.message))) {
+              // Preserve the spider's authentication diagnostic. It proves
+              // the retry reached the UC auth path, so translating it into a
+              // generic invalid-share message would hide the real failure.
+              return r;
+            }
             // ★ 2026-10-09（用户报「还未登录夸克账号」类文案定位需要）：日志落**原文全文**（上屏仍截 100 字）
             //   —— 不同 jar 家族的「未登录」文案措辞不同（如 fty「接口列表配置中心」/ wex「还没有配置夸克
             //   Cookie」/ 未知族「【配置中心】」），全文是判定 jar 家族与读取通道的第一手证据。

@@ -141,4 +141,12 @@ describe('driveCookieFiles — wex 系（玩偶/花卷/木偶）cookie 文件同
     expect(existsSync(wexCookiePath('quark', sandbox))).toBe(false);
     removeWexCookieFile('quark', sandbox); // 再删不抛（force）
   });
+
+  it('全量同步会清理已移除的旧 cookie', () => {
+    const sandbox = spiderSandboxDir(root);
+    writeWexCookieFile('uc', 'OLD', sandbox);
+    expect(existsSync(wexCookiePath('uc', sandbox))).toBe(true);
+    syncWexCookieFiles({}, sandbox);
+    expect(existsSync(wexCookiePath('uc', sandbox))).toBe(false);
+  });
 });

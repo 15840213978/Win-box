@@ -30,6 +30,20 @@ function extOf(low: string): string {
  * 先还原 `/play?url=<encoded>` 中继包装（py 蜘蛛带 UA/Referer 时会被包一层）。
  */
 export function detectMediaKind(url: string): MediaKind {
+  // do=m3u8 已明确是清单；不能先还原 url 再丢掉这个协议提示。
+  // 目标可能无扩展名，甚至以 .jpg 伪装。只识别本机路由，不把站外 do 参数当协议。
+  let relay = url || '';
+  for (let depth = 0; depth < 8; depth++) {
+    try {
+      const u = new URL(relay);
+      if (!['127.0.0.1', 'localhost'].includes(u.hostname)) break;
+      if (u.pathname === '/proxy' && u.searchParams.get('do') === 'm3u8') return 'hls';
+      if (u.pathname !== '/play') break;
+      const inner = u.searchParams.get('url') || '';
+      if (!/^https?:\/\//i.test(inner) || inner === relay) break;
+      relay = inner;
+    } catch { break; }
+  }
   const s = (resolvePlayTarget(url || '') || '').trim();
   if (!s) return 'video';
   if (NO_CARRIER_PROTO.test(s)) return 'unsupported';

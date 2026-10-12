@@ -53,6 +53,16 @@ describe('detectMediaKind — 图片 / 音频 / 直播 / 视频分流', () => {
     expect(detectMediaKind(wrap('https://v.test/index.m3u8'))).toBe('hls');
   });
 
+  it('本机 do=m3u8（含多层 /play 包装、无后缀/伪装后缀）始终走 HLS', () => {
+    for (const target of ['https://v.test/manifest', 'https://v.test/manifest.jpg']) {
+      const proxy = `http://127.0.0.1:9978/proxy?do=m3u8&url=${encodeURIComponent(target)}`;
+      expect(detectMediaKind(proxy)).toBe('hls');
+      expect(detectMediaKind(wrap(proxy))).toBe('hls');
+      expect(detectMediaKind(wrap(wrap(proxy)))).toBe('hls');
+    }
+    expect(detectMediaKind('https://v.test/proxy?do=m3u8&url=https%3A%2F%2Fimg.test%2Fa.jpg')).toBe('image');
+  });
+
   it('判不准的一律回落 video（含空串、裸 id、无扩展名 http）', () => {
     expect(detectMediaKind('')).toBe('video');
     expect(detectMediaKind('1001')).toBe('video');

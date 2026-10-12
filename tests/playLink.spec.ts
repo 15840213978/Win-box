@@ -130,6 +130,41 @@ describe('classifyPlayLink — 协议识别结论', () => {
 describe('SpiderHost.playInner 接线（经 play() 全链）', () => {
   const dir = (): string => (globalThis as unknown as { __shostDir: string }).__shostDir;
 
+  it.each(['', 'parse_api=8d112d1d&url=encrypted&token=|爱情怎么翻译|1', '/mizhicdn/video/error.mp4',
+    'https://cdn.test/mizhicdn/video/error.mp4'])('日志中的无效取链结果转为明确失败：%s', async url => {
+    const host = new SpiderHost();
+    const key = `badPlay-${url.length}`;
+    host.cfgAddSource({ key, name: '魔方', type: 3, api: 'https://mock.test/m.js' } as SourceBean);
+    (host as unknown as { vm: { play: unknown } }).vm = {
+      play: async () => ({ parse: 0, url, playUrl: '', flag: '4K线路JD', jx: 0 }),
+    };
+    const result = await host.play(key, '4K线路JD', 'parse_api=original&url=encrypted');
+    expect(result.parse).toBe(1);
+    expect(result.url).toBe('');
+    expect(result.message).toBeTruthy();
+  });
+
+  it('m3u8 代理包装保留完整查询、额外请求头及原始选集参数', async () => {
+    try {
+      const host = new SpiderHost();
+      host.cfgAddSource({ key: 'm3u8Src', name: '播放源', type: 3, api: 'https://mock.test/m.js' } as SourceBean);
+      const original = 'episode-2$share-context$original-file-id';
+      const target = 'http://127.0.0.1:9978/proxy?do=m3u8&url=https%3A%2F%2Fcdn.test%2Fentry%3Ftoken%3Da%252Bb%26part%3D2&headers=UmVmZXJlcjpodHRwcyUzQSUyRiUyRnNvdXJjZS50ZXN0JTJG';
+      const play = vi.fn(async () => ({ parse: 0, url: target, playUrl: '', flag: '线路2', jx: 0,
+        header: { Origin: 'https://source.test', Authorization: 'Bearer fixture' } }));
+      (host as unknown as { vm: { play: unknown } }).vm = { play };
+      const result = await host.play('m3u8Src', '线路2', original);
+      expect(play).toHaveBeenCalledWith(expect.objectContaining({ key: 'm3u8Src' }), '线路2', original, []);
+      expect(result.parse).toBe(0);
+      expect(result.flag).toBe('线路2');
+      const params = new URL(result.url).searchParams;
+      expect(params.get('url')).toBe(target);
+      expect(JSON.parse(params.get('headers')!)).toEqual({ Origin: 'https://source.test', Authorization: 'Bearer fixture' });
+    } finally {
+      try { rmSync(dir(), { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
   it('蜘蛛返回磁力地址 → url 置空 + parse:1 + 中文原因 + externalLink（不再黑屏）', async () => {
     try {
       const host = new SpiderHost();

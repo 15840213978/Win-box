@@ -149,18 +149,20 @@ const api = {
     fetch: (episodeId: number, source?: string) => invoke(IPC.DANMAKU_FETCH, episodeId, source),
   },
   meta: {
-    // TMDB 元数据补全（缺封面/缺简介兜底；凭据内置密文，用户无需填 key）
-    search: (name: string, year?: string) => invoke<MetaHit | null>(IPC.META_SEARCH, name, year),
+    // 元数据补全；TMDB 仅在用户配置凭据后启用。
+    search: (name: string, year?: string, provider?: 'tmdb' | 'douban') => invoke<MetaHit | null>(IPC.META_SEARCH, name, year, provider),
     // ★ 详情页增强：演职员/类型/相关推荐（详情页下方区块）
     extra: (name: string, year?: string) => invoke<MetaExtra | null>(IPC.META_EXTRA, name, year),
     // ★ 发现页榜单（无源时的默认主页；refresh=true 绕过 6h 缓存）
     discover: (refresh?: boolean) => invoke<DiscoverSection[]>(IPC.META_DISCOVER, !!refresh),
-    // ★ 发现页「分类」：TMDB 类型清单（电影/剧集）与按类型翻页
+    movieHot: () => invoke(IPC.META_MOVIE_HOT),
+    discoverImages: (name: string, mediaType: 'movie' | 'tv', year?: string, kind?: 'backdrop' | 'poster') => invoke<MetaImages>(IPC.META_DISCOVER_IMAGES, name, mediaType, year, kind),
+    // 发现页分类随当前榜单来源切换。
     genres: () => invoke<{ movie: DiscoverGenre[]; tv: DiscoverGenre[] }>(IPC.META_GENRES),
     genrePage: (mediaType: 'movie' | 'tv', genreId: number, page: number) =>
       invoke<DiscoverGenrePage>(IPC.META_GENRE_PAGE, mediaType, genreId, page),
     // ★ 2026-09-24：元数据来源配置（TMDB 自填 Key/代理/镜像 + 策略）与搜索面板联想
-    //   读取返回的 tmdbApiKey 只可能是**用户自己填的**值；内置凭据永不返回（仅 hasBuiltin 布尔）
+    //   只读取用户自己的凭据；hasBuiltin 固定 false。
     getSettings: () => invoke<MetaSettingsView>(IPC.META_GET_SETTINGS),
     setSettings: (patch: Partial<MetaSettings>) => invoke<MetaSettingsView>(IPC.META_SET_SETTINGS, patch),
     suggest: (q: string) => invoke<MetaSuggestion[]>(IPC.META_SUGGEST, q),

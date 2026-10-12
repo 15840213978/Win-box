@@ -32,7 +32,7 @@ import type {
   SubtitleSettings,
 } from '../../shared/subtitle';
 import type { DanmakuAnime, DanmakuCandidate, DanmakuSettings } from '../../shared/danmaku';
-import type { MetaHit, MetaExtra, DiscoverSection, DiscoverGenre, DiscoverGenrePage, MetaImages } from '../../shared/types';
+import type { MetaHit, MetaExtra, DiscoverSection, DiscoverGenre, DiscoverGenrePage, MetaImages, MovieHotList } from '../../shared/types';
 import type { MetaSettings, MetaSettingsView, MetaSuggestion } from '../../shared/meta';
 import type { PlayerSettings, MpvStatus, MpvStartOptions, MpvCommand, MpvStateEvent } from '../../shared/player';
 import type { BackupExportResult, BackupImportResult } from '../../shared/backup';
@@ -158,11 +158,13 @@ declare global {
         fetch: (episodeId: number, source: string) => Promise<IpcResult<string>>;
       };
       meta: {
-        search: (name: string, year?: string) => Promise<IpcResult<MetaHit | null>>;
+        search: (name: string, year?: string, provider?: 'tmdb' | 'douban') => Promise<IpcResult<MetaHit | null>>;
         /** ★ 详情页增强：演职员/类型/相关推荐 */
         extra: (name: string, year?: string) => Promise<IpcResult<MetaExtra | null>>;
         /** ★ 发现页榜单（无源默认主页） */
         discover: (refresh?: boolean) => Promise<IpcResult<DiscoverSection[]>>;
+        movieHot: () => Promise<IpcResult<MovieHotList>>;
+        discoverImages: (name: string, mediaType: 'movie' | 'tv', year?: string, kind?: 'backdrop' | 'poster') => Promise<IpcResult<MetaImages>>;
         /** ★ 发现页「分类」：类型清单与按类型翻页 */
         genres: () => Promise<IpcResult<{ movie: DiscoverGenre[]; tv: DiscoverGenre[] }>>;
         genrePage: (mediaType: 'movie' | 'tv', genreId: number, page: number) => Promise<IpcResult<DiscoverGenrePage>>;
@@ -218,6 +220,7 @@ declare global {
         isMini: () => Promise<IpcResult<{ mini: boolean }>>;
         setFullscreen: (fullscreen: boolean) => Promise<IpcResult<{ fullscreen: boolean }>>;
         isFullscreen: () => Promise<IpcResult<{ fullscreen: boolean }>>;
+        setResizable: (resizable: boolean) => Promise<IpcResult<{ resizable: boolean }>>;
         onInit: (cb: (init: unknown) => void) => () => void;
         onSwitchEp: (cb: (epIndex: number) => void) => () => void;
         onMini: (cb: (mini: boolean) => void) => () => void;
@@ -403,11 +406,13 @@ export const client = {
     unwrap(window.api.danmaku.episodes(bangumiId, animeTitle, source)),
   danmakuFetch: (episodeId: number, source: string) => unwrap(window.api.danmaku.fetch(episodeId, source)),
   // TMDB 元数据补全（缺封面/缺简介兜底，凭据内置密文）
-  metaSearch: (name: string, year?: string) => unwrap(window.api.meta.search(name, year)),
+  metaSearch: (name: string, year?: string, provider?: 'tmdb' | 'douban') => unwrap(window.api.meta.search(name, year, provider)),
   /** ★ 详情页增强：演职员/类型/相关推荐 */
   metaExtra: (name: string, year?: string) => unwrap(window.api.meta.extra(name, year)),
   /** ★ 发现页榜单（无源默认主页；refresh 绕过 6h 缓存） */
   metaDiscover: (refresh?: boolean) => unwrap(window.api.meta.discover(refresh)),
+  metaMovieHot: () => unwrap(window.api.meta.movieHot()),
+  metaDiscoverImages: (name: string, mediaType: 'movie' | 'tv', year?: string, kind?: 'backdrop' | 'poster') => unwrap(window.api.meta.discoverImages(name, mediaType, year, kind)),
   /** ★ 发现页「分类」：TMDB 类型清单 */
   metaGenres: () => unwrap(window.api.meta.genres()),
   /** ★ 发现页「分类」：按类型取一页 */

@@ -283,7 +283,7 @@ function headerOf(headers: Record<string, string>, name: string): string {
 }
 
 /**
- * 按蜘蛛返回的播放 header（Cookie/User-Agent/Referer）包装成 /play 中继 URL。
+ * 按蜘蛛返回的完整播放 header 包装成 /play 中继 URL。
  * 蜘蛛给的 header 是播放请求真正需要带上的（含网盘 Cookie），走 /play 统一注入。
  */
 export function wrapPlayUrlWithHeaders(url: string, headers: Record<string, string>): string {
@@ -295,5 +295,10 @@ export function wrapPlayUrlWithHeaders(url: string, headers: Record<string, stri
   if (cookie) p.set('cookie', cookie);
   if (ua) p.set('ua', ua);
   if (referer) p.set('referer', referer);
+  const extra = Object.fromEntries(Object.entries(headers).filter(([name]) =>
+    !/^(cookie|user-agent|ua|referer)$/i.test(name),
+  ));
+  // 内部上下文用 JSON；服务端负责校验普通端到端头，不能只保留三个常用头。
+  if (Object.keys(extra).length) p.set('headers', JSON.stringify(extra));
   return `http://127.0.0.1:9978/play?${p.toString()}`;
 }

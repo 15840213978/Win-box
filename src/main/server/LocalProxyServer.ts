@@ -279,6 +279,12 @@ export class LocalProxyServer {
       if (u.pathname === '/proxy' && u.searchParams.get('do') === 'live') {
         return await this.liveProxy(u, res);
       }
+      // TVBox/CatVod 的点播清单中继：`do=m3u8&url=...&headers=...`。
+      // 缓存 JAR 的 DC.B：URL 经 URLEncoder，headers 是 Base64(NO_WRAP)
+      // 编码的 `URLEncoder(name):URLEncoder(value);...`，不是 JSON。
+      if (u.pathname === '/proxy' && u.searchParams.get('do') === 'm3u8') {
+        return await this.m3u8Proxy(u, req, res);
+      }
       // ★ 2026-10-09：jar 的 `spider.Proxy.a()` 会探 9978~9999 的 `/proxy?do=ck`（应答体 == "ok" 才采用）。
       //   应答 ok 后 jar 把 `http://127.0.0.1:9978/proxy?do=pan&…` 当播放地址 —— playInner 再改写成
       //   `/proxy/<jvmPort>` 进该源蜘蛛 JVM 自解链（桌面端原生通道解不了的「分享内 fs_id」只有 jar 能解）。
@@ -287,7 +293,7 @@ export class LocalProxyServer {
         res.end('ok');
         return;
       }
-      if (u.pathname === '/play') {
+      if (u.pathname === '/play' || u.pathname === '/play/segment.ts') {
         return await this.playProxy(u, req, res);
       }
       if (u.pathname === '/img') {
@@ -593,19 +599,60 @@ private imgProxy(u: URL, res: ServerResponse): void {
     res.end(buf.body);
   }
 
-  /** /play：透传 + 注入自定义 UA/Referer；ck=<provider> 时按网盘 provider 注入 Cookie，并对 m3u8 重写片段地址 */
-  private async playProxy(u: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  /**
+   * CatVod m3u8 兼容入口；直接复用 /play 的诊断、请求头、清单重写和流式转发。
+   */
+  private async m3u8Proxy(u: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const target = u.searchParams.get('url') || '';
+    if (!/^https?:\/\//i.test(target)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('missing or invalid url');
+      return;
+    }
+    return this.playProxy(u, req, res, true);
+  }
+
+  /** /play：透传 + 注入自定义 UA/Referer；ck=<provider> 时按网盘 provider 注入 Cookie，并对 m3u8 重写片段地址 */
+  private async playProxy(u: URL, req: IncomingMessage, res: ServerResponse, playlistHint = false): Promise<void> {
+    let target = u.searchParams.get('url') || '';
     const ua = u.searchParams.get('ua') || '';
     const referer = u.searchParams.get('referer') || '';
     const ck = u.searchParams.get('ck') || '';
-    const rawCookie = u.searchParams.get('cookie') || ''; // 蜘蛛 header 直接给的原始 Cookie
+    let relayHeaders = decodeProxyHeaders(u.searchParams.get('headers') || '');
+    if (relayHeaders === null) {
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('invalid headers');
+      return;
+    }
+    const address = this.server?.address();
+    const proxyBase = address && typeof address !== 'string' ? `http://127.0.0.1:${address.port}` : LOCAL_PROXY_BASE;
+    // SpiderHost 会再给本机 m3u8 地址包 /play。合并这两层协议上下文，
+    // 否则 playerContent.header 只发到 localhost，真正的 CDN 请求拿不到。
+    let inner: URL | undefined;
+    try {
+      const candidate = new URL(target);
+      if (candidate.origin === proxyBase && candidate.pathname === '/proxy' && candidate.searchParams.get('do') === 'm3u8') inner = candidate;
+    } catch { /* 非本机 m3u8 入口按旧行为转发 */ }
+    if (inner) {
+      const innerTarget = inner.searchParams.get('url') || '';
+      const innerHeaders = decodeProxyHeaders(inner.searchParams.get('headers') || '');
+      if (!/^https?:\/\//i.test(innerTarget) || innerHeaders === null) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(innerHeaders === null ? 'invalid headers' : 'missing or invalid url');
+        return;
+      }
+      relayHeaders = safeProxyRequestHeaders({ ...innerHeaders, ...relayHeaders });
+      target = innerTarget;
+      playlistHint = true;
+    }
+    const rawCookie = u.searchParams.get('cookie') || headerValue(relayHeaders, 'cookie'); // 蜘蛛 header 直接给的原始 Cookie
     const dav = u.searchParams.get('dav') || '';
     if (!target) {
       res.writeHead(400);
       res.end('missing url'); return;
     }
     const headers: Record<string, string> = {};
+    Object.assign(headers, relayHeaders);
     if (ua) headers['User-Agent'] = ua;
     if (referer) headers['Referer'] = referer;
     // ★ 2026-09-29 WebDAV：凭据从主进程加密存储取（`dav=<id>`），只注入 Authorization
@@ -692,6 +739,7 @@ private imgProxy(u: URL, res: ServerResponse): void {
       range: range ? String(range).slice(0, 32) : undefined,
       url: redactUrl(target),
     });
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const ct = safeResponseHeader('content-type', resp.headers['content-type']) || 'application/octet-stream';
     // ★ 2026-09-23 修复 py 源「视频无法播放」：清单判定不能只看 Content-Type，
     //   且**相对地址必须以「302 之后的最终地址」为基准**重写。
@@ -699,8 +747,26 @@ private imgProxy(u: URL, res: ServerResponse): void {
     //   片段是相对地址（`xxx.ts?sign=…`）→ 老实现按**原始** target 拼 → 请求回到 208 主机，
     //   该主机对分片只回 3 字节 "OK\n"（防盗链哨兵）→ hls.js 拿到"3 字节分片"→ 永远播不出来。
     let pathIsPlaylist = false;
-    try { pathIsPlaylist = /\.m3u8$/i.test(new URL(target).pathname); } catch { /* 非法 URL 交给下游 */ }
-    if (/mpegurl|m3u8/i.test(ct) || pathIsPlaylist) {
+    try {
+      pathIsPlaylist = [target, resp.finalUrl].some((url) => /\.m3u8$/i.test(new URL(url).pathname));
+    } catch { /* 非法 URL 交给下游 */ }
+    const isPlaylist = resp.status >= 200 && resp.status < 300 && (playlistHint || /mpegurl|m3u8/i.test(ct) || pathIsPlaylist);
+    if (req.method === 'HEAD') {
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': isPlaylist ? 'application/vnd.apple.mpegurl' : ct,
+      };
+      // 清单会被重写，不能把原清单长度当作本地响应长度；媒体长度/范围仍原样保留。
+      if (!isPlaylist) for (const name of ['content-length', 'content-range', 'accept-ranges']) {
+        const value = safeResponseHeader(name, resp.headers[name]);
+        if (value !== undefined) responseHeaders[name] = value;
+      }
+      resp.body.on('error', () => undefined);
+      resp.body.destroy();
+      res.writeHead(resp.status, responseHeaders);
+      res.end();
+      return;
+    }
+    if (isPlaylist) {
       // m3u8 清单小，读全文后重写片段地址（每段都走 /play 带回 header/Cookie）
       const rawText = Buffer.from(await resp.body.arrayBuffer()).toString('utf-8');
       const base = resp.finalUrl || target; // ★ 302/重定向后的真实地址
@@ -720,7 +786,7 @@ private imgProxy(u: URL, res: ServerResponse): void {
           this.logger.w(`proxy /play: m3u8 去广告异常，已回原文：${(e as Error).message}`);
         }
       }
-      const body = rewriteM3u8(Buffer.from(text, 'utf-8'), base, ua, referer, cookie);
+      const body = rewriteM3u8WithHeaders(Buffer.from(text, 'utf-8'), base, headers, proxyBase);
       res.writeHead(resp.status, { 'Content-Type': /mpegurl|m3u8/i.test(ct) ? ct : 'application/vnd.apple.mpegurl' });
       res.end(body);
       return;
@@ -775,7 +841,7 @@ private imgProxy(u: URL, res: ServerResponse): void {
     //   ★ 带偏移的 Range 请求不嗅探（HLS 拖动 = 重开分片，实测 mpv/ffmpeg 均从 0 开始取）。
     if (resp.status < 400 && resp.body && (rng === '' || parseByteRange(rng)?.start === 0)) {
       const head = await this.readHead(resp.body as unknown as NodeJS.ReadableStream, DETECT_HEAD_LEN, (b) => {
-        if (b.length >= 2 && !((b[0] === 0xff && b[1] === 0xd8) || (b[0] === 0x89 && b[1] === 0x50))) return true;
+        if (b.length >= 2 && !((b[0] === 0xff && b[1] === 0xd8) || (b[0] === 0x89 && b[1] === 0x50) || (b[0] === 0x52 && b[1] === 0x49))) return true;
         return imagePreludeLen(b) > 0; // 图片结束且 TS 对齐即停
       });
       const pre = head.length ? imagePreludeLen(head) : 0;
@@ -1242,13 +1308,14 @@ function isBaiduCdn(target: string): boolean {
 /** 带 URI 属性的 HLS 标签（密钥/初始化段/子清单/备用音轨/低延迟分片…） */
 const URI_ATTR_TAGS = /^#EXT-X-(KEY|SESSION-KEY|MAP|MEDIA|I-FRAME-STREAM-INF|PART|PRELOAD-HINT|RENDITION-REPORT)\b/i;
 
-/** 相对 URI → 绝对；已是绝对地址或已在本中继 → 返回 ''（调用方保持原样，重写幂等） */
-function absolutize(raw: string, baseUrl: string): string {
+/** 相对/绝对 HTTP URI → 绝对；非 HTTP 或已在本中继则保持原样。 */
+function absolutize(raw: string, baseUrl: string, proxyBase = LOCAL_PROXY_BASE): string {
   const v = (raw || '').trim();
   if (!v) return '';
   try {
-    const abs = /^https?:\/\//i.test(v) ? v : new URL(v, baseUrl).toString();
-    return abs.startsWith(LOCAL_PROXY_BASE) ? '' : abs;
+    const abs = new URL(v, baseUrl);
+    if (!/^https?:$/.test(abs.protocol) || abs.origin === new URL(proxyBase).origin) return '';
+    return abs.toString();
   } catch {
     return '';
   }
@@ -1256,6 +1323,15 @@ function absolutize(raw: string, baseUrl: string): string {
 
 /** 把 m3u8 的片段/子清单 URI（绝对或相对）重写到本中继，使每个段请求都带上 Cookie/UA/Referer */
 export function rewriteM3u8(body: Buffer, baseUrl: string, ua: string, referer: string, cookie: string): Buffer {
+  return rewriteM3u8WithHeaders(body, baseUrl, {
+    ...(ua ? { 'User-Agent': ua } : {}),
+    ...(referer ? { Referer: referer } : {}),
+    ...(cookie ? { Cookie: cookie } : {}),
+  });
+}
+
+/** 使用完整请求头重写 HLS 清单（TVBox do=m3u8 协议）。 */
+export function rewriteM3u8WithHeaders(body: Buffer, baseUrl: string, headers: Record<string, string>, proxyBase = LOCAL_PROXY_BASE): Buffer {
   const lines = body.toString('utf-8').split(/\r?\n/);
   const out: string[] = [];
   for (const line of lines) {
@@ -1267,31 +1343,139 @@ export function rewriteM3u8(body: Buffer, baseUrl: string, ua: string, referer: 
       //   它们都是**注释行**、此前被原样透传 —— 相对 URI 会被 hls.js 按中继地址解析成
       //   http://127.0.0.1:9978/<key>（404），绝对 URI 又缺 Referer/UA/Cookie 被源站 403，
       //   于是 hls.js 抛 keyLoadError 致命错误 → 直接「播放失败」。这里让这些 URI 一并走中继。
-      out.push(URI_ATTR_TAGS.test(t) && t.includes('URI="') ? rewriteUriAttrs(line, baseUrl, ua, referer, cookie) : line);
+      out.push(URI_ATTR_TAGS.test(t) && /URI="/i.test(t) ? rewriteUriAttrsWithHeaders(line, baseUrl, headers, proxyBase) : line);
       continue;
     }
-    const abs = absolutize(t, baseUrl);
+    const abs = absolutize(t, baseUrl, proxyBase);
     if (!abs) { out.push(line); continue; }
-    out.push(wrapSegment(abs, ua, referer, cookie));
+    out.push(wrapSegmentWithHeaders(abs, headers, proxyBase));
   }
   return Buffer.from(out.join('\n'), 'utf-8');
 }
 
 /** 重写一行带 URI 属性的标签（如 `#EXT-X-KEY:METHOD=AES-128,URI="k"`）→ 中继地址 */
 export function rewriteUriAttrs(line: string, baseUrl: string, ua: string, referer: string, cookie: string): string {
-  return line.replace(/URI="([^"]*)"/gi, (whole, uri: string) => {
-    const abs = absolutize(uri, baseUrl);
-    if (!abs) return whole;
-    return `URI="${wrapSegment(abs, ua, referer, cookie)}"`;
+  return rewriteUriAttrsWithHeaders(line, baseUrl, {
+    ...(ua ? { 'User-Agent': ua } : {}),
+    ...(referer ? { Referer: referer } : {}),
+    ...(cookie ? { Cookie: cookie } : {}),
   });
 }
 
-function wrapSegment(url: string, ua: string, referer: string, cookie: string): string {
-  let q = `url=${encodeURIComponent(url)}`;
-  if (ua) q += `&ua=${encodeURIComponent(ua)}`;
-  if (referer) q += `&referer=${encodeURIComponent(referer)}`;
-  if (cookie) q += `&cookie=${encodeURIComponent(cookie)}`;
-  return `${LOCAL_PROXY_BASE}/play?${q}`;
+function rewriteUriAttrsWithHeaders(line: string, baseUrl: string, headers: Record<string, string>, proxyBase = LOCAL_PROXY_BASE): string {
+  return line.replace(/URI="([^"]*)"/gi, (whole, uri: string) => {
+    const abs = absolutize(uri, baseUrl, proxyBase);
+    if (!abs) return whole;
+    return `URI="${wrapSegmentWithHeaders(abs, headers, proxyBase)}"`;
+  });
+}
+
+function wrapSegmentWithHeaders(url: string, headers: Record<string, string>, proxyBase: string): string {
+  const p = new URLSearchParams({ url });
+  const normalized = safeProxyRequestHeaders(headers);
+  const ua = headerValue(normalized, 'user-agent');
+  const referer = headerValue(normalized, 'referer');
+  const cookie = headerValue(normalized, 'cookie');
+  // 保持旧 /play URL 的可读形式；额外的 Origin/Authorization 等头放进 JSON。
+  if (ua) p.set('ua', ua);
+  if (referer) p.set('referer', referer);
+  if (cookie) p.set('cookie', cookie);
+  const extra = Object.fromEntries(Object.entries(normalized).filter(([name]) =>
+    !/^(user-agent|referer|cookie|range)$/i.test(name),
+  ));
+  if (Object.keys(extra).length) p.set('headers', encodeProxyHeaders(extra));
+  // FFmpeg may prefer an image demuxer based on the final URL extension even
+  // after we strip the image envelope. Give disguised HLS media a TS path,
+  // while keeping the original upstream URL/signature untouched in the query.
+  let imageSegment = false;
+  try { imageSegment = /\.(?:webp|jpe?g|png)$/i.test(new URL(url).pathname); } catch { /* invalid upstream */ }
+  // libavformat also scans dots in the query when guessing a demuxer. Percent
+  // encode them for image media so only the .ts path is visible to that guess;
+  // URLSearchParams restores the exact upstream URL (including its signature).
+  const query = imageSegment ? p.toString().replace(/\./g, '%2E') : p.toString();
+  return `${proxyBase}${imageSegment ? '/play/segment.ts' : '/play'}?${query}`;
+}
+
+/** 读取不区分大小写的请求头。 */
+function headerValue(headers: Record<string, string>, name: string): string {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) return value;
+  }
+  return '';
+}
+
+/**
+ * TVBox 代理只允许转发普通端到端请求头；禁止 Host、Connection、长度等由
+ * undici/本地中继管理的头，避免源配置借此破坏代理连接或伪造响应边界。
+ */
+function safeProxyRequestHeaders(input: Record<string, unknown>): Record<string, string> {
+  const blocked = /^(host|connection|proxy-connection|keep-alive|te|trailer|upgrade|transfer-encoding|content-length|accept-encoding|range)$/i;
+  const out = new Map<string, [string, string]>();
+  const canonical: Record<string, string> = {
+    'user-agent': 'User-Agent', ua: 'User-Agent', referer: 'Referer', cookie: 'Cookie',
+    authorization: 'Authorization', origin: 'Origin',
+  };
+  for (const [name, raw] of Object.entries(input)) {
+    if (!name || blocked.test(name) || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) continue;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== 'string' || !value || /[\r\n\0]/.test(value)) continue;
+    try {
+      validateHeaderValue(name, value);
+      const key = canonical[name.toLowerCase()] || name;
+      out.set(key.toLowerCase(), [key, value]);
+    } catch { /* 非法 header 只丢弃，不影响该源其它播放参数 */ }
+  }
+  return Object.fromEntries(out.values());
+}
+
+/** 内部 /play 请求头上下文统一使用 URL-safe Base64 JSON。 */
+function encodeProxyHeaders(headers: Record<string, string>): string {
+  return Buffer.from(JSON.stringify(headers), 'utf8').toString('base64url');
+}
+
+/**
+ * 解码 `do=m3u8`/`/play?headers=`：已核实 DC.B 使用 standard Base64
+ * NO_WRAP 的 `formEncodedName:formEncodedValue;...`。同时接受内部 /play
+ * 使用的 Base64 JSON（standard/url-safe），以及明文 JSON。
+ * 空值表示没有额外 header；格式确实错误时返回 null，让调用方返回 400 而不是
+ * 静默丢掉 Referer/Cookie 后再报一个难以定位的上游 403。
+ */
+export function decodeProxyHeaders(value: string): Record<string, string> | null {
+  if (!value) return {};
+  const parseJson = (text: string): Record<string, string> | null => {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return safeProxyRequestHeaders(parsed as Record<string, unknown>);
+      }
+    } catch { /* not JSON */ }
+    return null;
+  };
+  const json = parseJson(value);
+  if (json !== null) return json;
+  // DC.B 把 Base64 直接拼进查询，URLSearchParams 会把其中的 '+' 变空格。
+  const normalized = value.replace(/ /g, '+').replace(/-/g, '+').replace(/_/g, '/');
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
+  const bytes = Buffer.from(normalized, 'base64');
+  if (bytes.toString('base64').replace(/=+$/, '') !== normalized.replace(/=+$/, '')) return null;
+  const text = bytes.toString('utf8');
+  const base64Json = parseJson(text);
+  if (base64Json !== null) return base64Json;
+  const entries: Array<[string, string]> = [];
+  try {
+    for (const entry of text.split(';')) {
+      const colon = entry.indexOf(':');
+      // 分隔符以外的 ':'/';' 必须经 URLEncoder 编码；不猜测畸形数据。
+      if (colon <= 0 || entry.indexOf(':', colon + 1) !== -1) return null;
+      const name = decodeURIComponent(entry.slice(0, colon).replace(/\+/g, ' '));
+      const val = decodeURIComponent(entry.slice(colon + 1).replace(/\+/g, ' '));
+      entries.push([name, val]);
+    }
+    return safeProxyRequestHeaders(Object.fromEntries(entries));
+  } catch { /* malformed percent encoding */
+    return null;
+  }
 }
 
 /**
@@ -1314,9 +1498,29 @@ export function jpegPreludeLen(head: Buffer): number {
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** 完整 JPEG/PNG 后紧接至少四个 TS 同步头才剥离；纯图片、截断或坏块均原样透传。 */
+/** JPEG/PNG 前导或 WebP 的尾部 TS_D 块；至少四个 TS 同步头才剥离。 */
 export function imagePreludeLen(head: Buffer): number {
   if (head[0] === 0xff && head[1] === 0xd8) return jpegPreludeLen(head);
+  if (head.length >= 20 && head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WEBP') {
+    // 摸鱼儿 JD4K：RIFF 长度包括 TS_D 数据，不能把 RIFF 末尾当图片末尾。
+    // 按 chunk 边界解析，不在 VP8 像素中搜索同步头或 TS_D 字符串。
+    const riffEnd = head.readUInt32LE(4) + 8;
+    let imageSeen = false;
+    for (let off = 12; off + 8 <= head.length && off + 8 <= riffEnd;) {
+      const kind = head.toString('ascii', off, off + 4);
+      const len = head.readUInt32LE(off + 4);
+      const payload = off + 8, end = payload + len + (len & 1);
+      if (end > riffEnd) return 0;
+      if (kind === 'TS_D') {
+        // 只接受末块完整 TS 载荷（无尾部图片块/奇数 padding），避免截掉其他数据。
+        return imageSeen && len >= 188 * 4 && len % 188 === 0 && end === riffEnd && isTsAligned(head, payload) ? payload : 0;
+      }
+      if (end > head.length) return 0;
+      if (kind === 'VP8 ' || kind === 'VP8L') imageSeen = true;
+      off = end;
+    }
+    return 0;
+  }
   if (head.length < 33 || !head.subarray(0, 8).equals(PNG_SIGNATURE)) return 0;
   // 首块必须是固定长度的 IHDR，再沿块长度走到 IEND；不能搜索像素数据中的同名字符串。
   if (head.readUInt32BE(8) !== 13 || head.toString('ascii', 12, 16) !== 'IHDR') return 0;

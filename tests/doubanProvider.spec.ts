@@ -1,7 +1,17 @@
 // tests/doubanProvider.spec.ts — 豆瓣元数据兜底（仅中文片名、TMDB miss 时启用）
 // 不触网：纯函数（parseDoubanSearch/isCjkName）+ 缓存键前缀。
 import { describe, it, expect } from 'vitest';
-import { parseDoubanSearch, isCjkName, DOUBAN_CACHE_PREFIX, doubanBreakerOpen, noteDoubanStatus, __resetDoubanBreakerForTest } from '../src/main/meta/doubanProvider';
+import { parseDoubanSearch, isCjkName, matchingDoubanCovers, DOUBAN_CACHE_PREFIX, doubanBreakerOpen, noteDoubanStatus, __resetDoubanBreakerForTest } from '../src/main/meta/doubanProvider';
+
+describe('豆瓣封面匹配', () => {
+  it('跳过相关片和续集，按同名及年份消歧；支持外文片名', () => {
+    const hit = { title: '影片', year: 2025 as const, type: 'movie' as const, poster: 'cover', overview: '' };
+    const candidates = [{ ...hit, title: '影片2' }, { ...hit, year: 1990 }, hit];
+    expect(matchingDoubanCovers(candidates, '影片', '2025')).toEqual([hit]);
+    expect(matchingDoubanCovers(candidates, '不存在')).toEqual([]);
+    expect(matchingDoubanCovers([{ ...hit, title: 'The Movie' }], 'the movie')).toHaveLength(1);
+  });
+});
 
 const DB_JSON = {
   subjects: {

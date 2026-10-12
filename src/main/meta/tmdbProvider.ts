@@ -5,7 +5,6 @@
 import { request as undiciRequest } from 'undici';
 import { createDohAgent } from '../net/DnsResolver';
 import { dispatchChain } from '../net/proxy';
-import { getTmdbCredentials } from './credentials';
 import { LOCAL_PROXY_BASE } from '../../shared/constants';
 import type { Logger } from '../../shared/types';
 import type { MetaHit, MetaExtra, DiscoverItem, DiscoverSection, DiscoverGenre, DiscoverGenrePage } from '../../shared/types';
@@ -23,10 +22,10 @@ const IMG_PROXY = `${LOCAL_PROXY_BASE}/img`;
 
 /**
  * ★ 2026-09-24：运行时可配置（宿主按用户设置注入）——
- *   userKey  ：用户自填 API Key（v3）或 v4 读访问令牌；空 = 用内置加密凭据
+ *   userKey  ：用户自填 API Key（v3）或 v4 读访问令牌；空 = 禁用 TMDB
  *   apiBase  ：API 代理地址；空 = 内置默认
  *   imageBase：图片镜像地址；空 = 内置默认
- * 未注入时行为与历史完全一致（内置凭据 + 官方地址），单测无需设置。
+ * 未配置用户凭据时不访问 TMDB，也不读取历史 TMDB 缓存。
  */
 export interface TmdbRuntimeConfig {
   userKey: string;
@@ -60,7 +59,7 @@ export function hasUserTmdbKey(): boolean {
   return !!rt.userKey.trim();
 }
 
-/** 生效凭据：用户填的优先（eyJ 前缀按 v4 令牌走 Bearer，否则按 v3 Key 走查询参数）；否则内置密文解密 */
+/** 仅接受用户配置的凭据；eyJ 前缀按 v4 令牌走 Bearer，否则按 v3 Key 走查询参数。 */
 export interface TmdbCred {
   bearer: string;
   apiKey: string;
@@ -71,8 +70,7 @@ export function tmdbCreds(): TmdbCred | null {
   if (k) {
     return k.startsWith('eyJ') ? { bearer: k, apiKey: '', viaUser: true } : { bearer: '', apiKey: k, viaUser: true };
   }
-  const b = getTmdbCredentials();
-  return b ? { bearer: b.accessToken, apiKey: b.apiKey, viaUser: false } : null;
+  return null;
 }
 
 /** 把鉴权拼到请求上：v4 令牌走 Authorization 头，v3 Key 走 api_key 查询参数 */

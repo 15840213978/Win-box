@@ -18,6 +18,36 @@ const findFunction = (name: string): ts.FunctionDeclaration => {
 };
 
 describe('detail episode playback intent', () => {
+  it('取链失败不会把原始选集参数回退交给播放器，preparedUrl 也经过校验', () => {
+    const play = findFunction('play').getText(file);
+    expect(play).toContain('playbackResultError(r)');
+    expect(play).toContain('onPlay(r.url,');
+    expect(play).not.toContain('r.url || target.url');
+    const player = readFileSync(new URL('../src/renderer/pages/PlayerPage.tsx', import.meta.url), 'utf8');
+    expect(player).toContain('playbackResultError(r)');
+    expect(player).not.toContain('setActiveUrl(target.url)');
+  });
+  it('封面与背景加载不进入播放链路，简介仍展示源数据', () => {
+    const player = readFileSync(new URL('../src/renderer/pages/PlayerPage.tsx', import.meta.url), 'utf8');
+    for (const content of [source, player]) {
+      const parsed = ts.createSourceFile('page.tsx', content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      const calls: string[] = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.expression.getText(parsed) === 'client') calls.push(node.expression.name.text);
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+      expect(calls).not.toContain('metaSearch');
+      expect(calls).not.toContain('metaExtra');
+      expect(calls).not.toContain('metaImages');
+      expect(calls).toContain('play');
+    }
+    expect(findFunction('play').getText(file)).not.toMatch(/useCovers|metaSearch|metaDiscoverImages/);
+    expect(source).toContain("pic: detail?.pic || fromListPic || ''");
+    expect(source).toContain("const introText = (detail?.des || '').trim()");
+  });
+
   it('single-click updates selection without switching or opening a player', () => {
     const choose = findFunction('chooseEp').getText(file);
     expect(choose).toContain('setEp(i)');

@@ -18,7 +18,7 @@
 // 与夸克（quarkTransfer）**同构**：分享列表解析复用其通用件 `resolveShareFile`，
 // 不复制那套「按 fid 精确命中、集名唯一匹配、绝不盲选」的护栏逻辑。
 import type { Logger } from '../../shared/types';
-import { resolveShareFile, type ShareListFetcher } from './quarkTransfer';
+import { resolveShareFile, extractCompoundPanEpisode, type ShareListFetcher } from './quarkTransfer';
 import { mergeSetCookies } from './cookieMerge';
 
 const REF = 'https://drive.uc.cn/';
@@ -29,6 +29,7 @@ const UA =
 /** 回退路径的转存任务轮询：间隔与次数上限（UC 服务端 task 通常 1~3s 完成） */
 const TASK_INTERVAL_MS = 800;
 const TASK_MAX_TRIES = 20;
+const MEDIA_PROBE_BYTES = 4096;
 
 export interface UcShareResult {
   url: string;
@@ -38,6 +39,50 @@ export interface UcShareResult {
   /** 仅回退路径（真转存）才有：本人盘落盘 fid，供「关播放窗口即删」清理用 */
   fid?: string;
   pdirFid?: string;
+}
+
+/** Check that a returned CDN URL is the selected file, not a short error object. */
+export async function validateUcMediaUrl(
+  url: string,
+  expectedSize = 0,
+  header: Record<string, string> = {},
+): Promise<{ ok: boolean; reason?: string }> {
+  if (!/^https?:\/\//i.test(url)) return { ok: false, reason: '下载地址不是 HTTP(S)' };
+  try {
+    const r = await globalThis.fetch(url, {
+      headers: { ...header, Range: 'bytes=0-0', Accept: '*/*' },
+    });
+    const contentType = String(r.headers.get('content-type') || '').toLowerCase();
+    const contentRange = String(r.headers.get('content-range') || '');
+    const length = Number(r.headers.get('content-length') || 0);
+    const totalMatch = /\/([0-9]+)$/.exec(contentRange);
+    const reportedSize = totalMatch ? Number(totalMatch[1]) : length;
+    // The CDN may ignore Range and start streaming the whole object. Read only
+    // a small prefix needed for signature detection, then cancel the body so a
+    // multi-gigabyte episode is never downloaded during validation.
+    let bytes = new Uint8Array();
+    if (r.body) {
+      const reader = r.body.getReader();
+      try {
+        const first = await reader.read();
+        bytes = first.value ? first.value.slice(0, MEDIA_PROBE_BYTES) : bytes;
+      } finally {
+        await reader.cancel().catch(() => undefined);
+      }
+    }
+    const looksMedia = /video|audio|octet-stream|matroska|mpeg|mp4|webm|quicktime/i.test(contentType)
+      || bytes[0] === 0x47
+      || (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3)
+      || (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70);
+    if (r.status < 200 || r.status > 299) return { ok: false, reason: `CDN 响应 HTTP ${r.status}` };
+    if (!looksMedia) return { ok: false, reason: `CDN 返回非媒体内容（${contentType || '未知类型'}）` };
+    if (expectedSize > 0 && reportedSize > 0 && reportedSize !== expectedSize) {
+      return { ok: false, reason: `CDN 文件大小 ${reportedSize} 与目标 ${expectedSize} 不一致` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `CDN 媒体校验异常：${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 /**
@@ -81,6 +126,8 @@ export function extractUcShare(id: string, flag = ''): { pwdId: string; passcode
   // fty 的 UC/夸克描述都使用 sId/fid，sId 本身不能决定网盘。
   // 仅在明确 UC 线路（优汐是 fty 的 UC 名称）下解释该描述；不凭通用字段猜提供商。
   if (/^(?:UC(?:\b|网盘)|优汐)/i.test(flag)) {
+    const compound = extractCompoundPanEpisode(id);
+    if (compound) return { pwdId: compound.shareId, passcode: '' };
     try {
       const d = JSON.parse(id);
       if (d && typeof d === 'object' && typeof d.sId === 'string' && /^[0-9a-z_-]+$/i.test(d.sId) &&
@@ -102,7 +149,7 @@ async function jpost(
   path: string,
   cookie: string | null,
   body: unknown,
-): Promise<{ status: number; json: any; text: string; setCookie?: string }> {
+): Promise<{ status: number; json: any; text: string; setCookies: string[] }> {
   const headers: Record<string, string> = {
     'User-Agent': UA,
     Referer: REF,
@@ -121,11 +168,14 @@ async function jpost(
   // UC download responses can refresh the playback session (__puus and peers).
   // Preserve this without ever logging the cookie; the CDN may reject the first
   // media Range when only the account cookie is sent.
-  return { status: r.status, json, text, setCookie: r.headers.get('set-cookie') || undefined };
+  const rawCookie = r.headers.get('set-cookie');
+  const setCookies = typeof r.headers.getSetCookie === 'function'
+    ? r.headers.getSetCookie() : rawCookie ? [rawCookie] : [];
+  return { status: r.status, json, text, setCookies };
 }
 
 async function jget(path: string, cookie: string): Promise<{ status: number; json: any; text: string }> {
-  const r = await globalThis.fetch(`${BASE}${path}?${Q}`, {
+  const r = await globalThis.fetch(`${BASE}${path}${path.includes('?') ? '&' : '?'}${Q}`, {
     headers: { 'User-Agent': UA, Referer: REF, Origin: REF.replace(/\/$/, ''), Cookie: cookie },
   });
   const text = await r.text();
@@ -188,11 +238,13 @@ async function ucResolveInner(
         `&pdir_fid=${encodeURIComponent(pdirFid)}&force=0&_page=${page}&_size=50&_fetch_banner=0&_fetch_share=0&_fetch_total=1`,
       cookie,
     );
+    if (d.status !== 200 || d.json?.code !== 0) throw new Error(`UC 分享列表失败 HTTP ${d.status}, code=${d.json?.code ?? '-'}`);
     const list = d.json?.data?.list;
     return Array.isArray(list) ? list : [];
   };
   const file = await resolveShareFile(opts.innerFid, log, fetcher, opts.innerName);
   if (!file) return fail('分享内未定位到目标文件（可能已失效或集数不匹配）');
+  if (!file.token) return fail(`目标文件 ${file.name || file.fid} 缺少分享令牌`);
 
   // 3) ★ 主路径：免转存直链（带分享 token 直接 download，不写本人盘）
   const direct = await jpost('/file/download', cookie, {
@@ -203,12 +255,17 @@ async function ucResolveInner(
   });
   const directUrl = String(direct.json?.data?.[0]?.download_url || '');
   if (directUrl) {
-    log.i('uc 分享免转存取链成功');
     // The URL is bound to the session cookie returned by /file/download on
     // some UC CDN nodes.  Returning only the original account cookie causes a
     // reproducible 403 on the first Range request despite a valid download_url.
-    const playCookie = direct.setCookie ? mergeSetCookies(cookie, direct.setCookie) : cookie;
-    return { ok: true, url: directUrl, header: { ...header, Cookie: playCookie } };
+    const playCookie = mergeSetCookies(cookie, direct.setCookies);
+    const playHeader = { ...header, Cookie: playCookie };
+    const valid = await validateUcMediaUrl(directUrl, file.size, playHeader);
+    if (valid.ok) {
+      log.i('uc 分享免转存取链成功');
+      return { ok: true, url: directUrl, header: playHeader };
+    }
+    log.w(`uc 免转存直链媒体校验失败（${valid.reason || '未知原因'}），回退转存路径`);
   }
   log.w(`uc 免转存直链未取到（code=${direct.json?.code ?? direct.status}），回退转存路径`);
 
@@ -252,9 +309,15 @@ async function ucResolveInner(
   const url = String(dl.json?.data?.[0]?.download_url || '');
   if (!url) return fail(`未取到下载地址（code=${dl.json?.code ?? dl.status}）`);
 
+  const playCookie = mergeSetCookies(cookie, dl.setCookies);
+  const playHeader = { ...header, Cookie: playCookie };
+  const valid = await validateUcMediaUrl(url, file.size, playHeader);
+  if (!valid.ok) {
+    await ucFileDelete(cookie, '0', ownFid, log);
+    return fail(`转存直链媒体校验失败（${valid.reason || '未知原因'}）`);
+  }
   log.i('uc 转存取链成功');
-  const playCookie = dl.setCookie ? mergeSetCookies(cookie, dl.setCookie) : cookie;
-  return { ok: true, url, header: { ...header, Cookie: playCookie }, fid: ownFid, pdirFid: '0' };
+  return { ok: true, url, header: playHeader, fid: ownFid, pdirFid: '0' };
 }
 
 /** 删除本人盘文件（仅回退路径转存过的才需要；「关播放窗口即删」清理用） */
