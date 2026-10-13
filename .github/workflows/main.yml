@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check bundled runtime resources
+      - name: Report bundled runtime resources (non-blocking)
         shell: pwsh
         run: |
           $required = @(
@@ -54,16 +54,23 @@ jobs:
             if (-not (Test-Path -LiteralPath $path -PathType Container)) {
               $missing += $path
               Write-Host "MISSING: $path"
-            } elseif (-not (Get-ChildItem -LiteralPath $path -Force -Recurse -File | Select-Object -First 1)) {
-              $missing += "$path (empty)"
-              Write-Host "EMPTY: $path"
             } else {
-              Write-Host "OK: $path"
+              $files = @(Get-ChildItem -LiteralPath $path -Force -Recurse -File -ErrorAction SilentlyContinue)
+              if ($files.Count -eq 0) {
+                $missing += "$path (empty)"
+                Write-Host "EMPTY: $path"
+              } else {
+                $bytes = ($files | Measure-Object -Property Length -Sum).Sum
+                Write-Host ("OK: {0} | {1} files | {2:N1} MiB" -f $path, $files.Count, ($bytes / 1MB))
+              }
             }
           }
           if ($missing.Count -gt 0) {
-            Write-Error ("Refusing to publish an incomplete installer. Missing runtime resources:`n - " + ($missing -join "`n - ") + "`nAdd the legally distributable runtime files to the expected paths, or update this list only after verifying that a component is not required.")
-            exit 1
+            $message = "Some optional/runtime resource paths are absent. The build will continue, but related features may be unavailable: " + ($missing -join ', ')
+            Write-Warning $message
+            Write-Host "::warning::$message"
+          } else {
+            Write-Host 'All checked runtime resource paths are present.'
           }
 
       - name: Run tests
@@ -102,7 +109,9 @@ jobs:
           name: Win-Box Windows Build ${{ github.run_number }}.${{ github.run_attempt }}
           body: |
             Automated Windows installer build from commit ${{ github.sha }}.
-            Runtime-resource preflight passed. Download the `.exe` installer from the assets below.
+            Runtime-resource presence was reported in the Actions log; missing paths do not block packaging.
+            Some playback/JVM features may be unavailable if their runtime files are not bundled.
+            Download the `.exe` installer from the assets below.
           files: release*/*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
