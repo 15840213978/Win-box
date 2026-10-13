@@ -1,4 +1,4 @@
-name: Windows Build
+name: Windows Build and Release
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   test-and-build:
+    # Do not publish a Release from pull requests; only build/test them.
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -54,10 +55,17 @@ jobs:
       - name: Package Windows installer
         run: pnpm exec electron-builder --win nsis --publish never
 
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+      - name: Upload installer to GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
         with:
-          name: Win-Box-Windows-${{ github.sha }}
-          path: release1.21.01/*.exe
-          if-no-files-found: error
-          retention-days: 14
+          tag_name: win-box-build-${{ github.run_number }}-${{ github.run_attempt }}
+          name: Win-Box Windows Build ${{ github.run_number }}.${{ github.run_attempt }}
+          body: |
+            Automated Windows installer build from commit ${{ github.sha }}.
+            Download the `.exe` installer from the assets below.
+          files: release*/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: false
+          prerelease: true
