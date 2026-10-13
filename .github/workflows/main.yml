@@ -16,7 +16,6 @@ concurrency:
 
 jobs:
   test-and-build:
-    # Do not publish a Release from pull requests; only build/test them.
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -39,6 +38,34 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check bundled runtime resources
+        shell: pwsh
+        run: |
+          $required = @(
+            'resources/mpv',
+            'resources/jvm/jre',
+            'resources/jvm/libs',
+            'resources/jvm/stubs',
+            'resources/jvm/shell-shim',
+            'resources/jvm/real'
+          )
+          $missing = @()
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+              $missing += $path
+              Write-Host "MISSING: $path"
+            } elseif (-not (Get-ChildItem -LiteralPath $path -Force -Recurse -File | Select-Object -First 1)) {
+              $missing += "$path (empty)"
+              Write-Host "EMPTY: $path"
+            } else {
+              Write-Host "OK: $path"
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Refusing to publish an incomplete installer. Missing runtime resources:`n - " + ($missing -join "`n - ") + "`nAdd the legally distributable runtime files to the expected paths, or update this list only after verifying that a component is not required.")
+            exit 1
+          }
+
       - name: Run tests
         run: pnpm test
 
@@ -55,6 +82,18 @@ jobs:
       - name: Package Windows installer
         run: pnpm exec electron-builder --win nsis --publish never
 
+      - name: Verify installer exists
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path 'release*/*.exe' -File -ErrorAction SilentlyContinue)
+          if ($installers.Count -eq 0) {
+            Write-Error 'No Windows installer was produced; refusing to publish.'
+            exit 1
+          }
+          $installers | ForEach-Object {
+            Write-Host ("Installer: {0} | {1:N1} MiB" -f $_.FullName, ($_.Length / 1MB))
+          }
+
       - name: Upload installer to GitHub Releases
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
@@ -63,7 +102,7 @@ jobs:
           name: Win-Box Windows Build ${{ github.run_number }}.${{ github.run_attempt }}
           body: |
             Automated Windows installer build from commit ${{ github.sha }}.
-            Download the `.exe` installer from the assets below.
+            Runtime-resource preflight passed. Download the `.exe` installer from the assets below.
           files: release*/*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
